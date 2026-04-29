@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, XCircle, RefreshCw, ArrowRight } from "lucide-react";
@@ -72,8 +73,13 @@ export function ContractDetail() {
   });
 
   const transition = useMutation({
-    mutationFn: async (status: string) =>
-      api.post(`/installations/${installation!._id}/transition`, { status }),
+    mutationFn: async (input: { status: string; occurredAt?: string }) =>
+      api.post(`/installations/${installation!._id}/transition`, {
+        status: input.status,
+        occurredAt: input.occurredAt
+          ? new Date(input.occurredAt + "T12:00:00").toISOString()
+          : undefined,
+      }),
     onSuccess: () => qc.invalidateQueries(),
   });
 
@@ -148,23 +154,14 @@ export function ContractDetail() {
         </Card>
 
         <Card padding={false}>
-          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-slate-200">
             <h3 className="font-semibold">Installation</h3>
-            {installation && nextInstallStatus && (role === "ADMIN" || role === "AREA_MANAGER") && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => transition.mutate(nextInstallStatus)}
-                loading={transition.isPending}
-                icon={<ArrowRight className="size-3.5" />}
-              >
-                Advance to {nextInstallStatus}
-              </Button>
-            )}
           </div>
           <div className="p-6">
             {!installation ? (
-              <p className="text-sm text-slate-500">Sign the contract to create an installation.</p>
+              <p className="text-sm text-slate-500">
+                Sign the contract to create an installation.
+              </p>
             ) : (
               <>
                 <dl className="space-y-3 text-sm mb-4">
@@ -173,7 +170,16 @@ export function ContractDetail() {
                   </Row>
                   <Row k="Activated">{formatDate(installation.activatedAt)}</Row>
                 </dl>
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                {nextInstallStatus && (role === "ADMIN" || role === "AREA_MANAGER") && (
+                  <AdvanceForm
+                    nextStatus={nextInstallStatus}
+                    onSubmit={(occurredAt) =>
+                      transition.mutate({ status: nextInstallStatus, occurredAt })
+                    }
+                    pending={transition.isPending}
+                  />
+                )}
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mt-6 mb-2">
                   Milestones
                 </h4>
                 <ol className="relative pl-5 space-y-3 border-l border-slate-200">
@@ -245,6 +251,51 @@ function Row({ k, children }: { k: string; children: React.ReactNode }) {
     <div className="flex">
       <dt className="w-32 text-slate-500">{k}</dt>
       <dd className="flex-1 text-slate-900">{children}</dd>
+    </div>
+  );
+}
+
+function AdvanceForm({
+  nextStatus,
+  onSubmit,
+  pending,
+}: {
+  nextStatus: string;
+  onSubmit: (occurredAt: string | undefined) => void;
+  pending: boolean;
+}) {
+  const [date, setDate] = useState<string>("");
+  return (
+    <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-2">
+      <div className="text-xs text-slate-600">
+        Advance to <strong>{nextStatus}</strong>
+        {nextStatus === "ACTIVATED" && (
+          <span className="text-amber-700"> — date matters: bonus for that month uses this.</span>
+        )}
+      </div>
+      <div className="flex gap-2 items-end">
+        <label className="flex-1">
+          <span className="block text-xs text-slate-500 mb-1">
+            Milestone date {nextStatus === "ACTIVATED" ? "(activation)" : "(occurred at)"} —
+            leave empty for today
+          </span>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            max={new Date().toISOString().slice(0, 10)}
+            className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </label>
+        <Button
+          size="sm"
+          onClick={() => onSubmit(date || undefined)}
+          loading={pending}
+          icon={<ArrowRight className="size-3.5" />}
+        >
+          Advance
+        </Button>
+      </div>
     </div>
   );
 }

@@ -127,4 +127,23 @@ export const createBonusRule: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const deleteBonusRule: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const id = req.params.id!;
+    const before = await bonusRules.softDelete(id);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "bonus-rule.delete",
+      targetType: "BonusRule",
+      targetId: id,
+      before: before.toObject(),
+      requestId: req.requestId,
+    });
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
 export { objectId };

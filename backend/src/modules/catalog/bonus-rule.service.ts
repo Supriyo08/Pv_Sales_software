@@ -42,6 +42,16 @@ export async function create(input: CreateInput) {
   });
 }
 
+export async function softDelete(id: string) {
+  const result = await BonusRule.findOneAndUpdate(
+    { _id: id, deletedAt: null },
+    { deletedAt: new Date() },
+    { new: true }
+  );
+  if (!result) throw new HttpError(404, "Bonus rule not found");
+  return result;
+}
+
 export async function activeForRoleAt(role: UserRole, at: Date) {
   return BonusRule.find({
     role,

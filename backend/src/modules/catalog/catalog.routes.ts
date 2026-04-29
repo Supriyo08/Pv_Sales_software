@@ -14,5 +14,6 @@ router.post("/solutions/:id/version", requireRole("ADMIN"), ctrl.createVersion);
 
 router.get("/bonus-rules", ctrl.listBonusRules);
 router.post("/bonus-rules", requireRole("ADMIN"), ctrl.createBonusRule);
+router.delete("/bonus-rules/:id", requireRole("ADMIN"), ctrl.deleteBonusRule);
 
 export default router;
