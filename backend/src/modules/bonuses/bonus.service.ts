@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import { Bonus } from "./bonus.model";
 import { BonusRule } from "../catalog/bonus-rule.model";
 import { Commission } from "../commissions/commission.model";
@@ -65,8 +66,18 @@ async function evaluateForUser(
   if (installations.length === 0) return { qualifierCount: 0, baseAmountCents: 0 };
 
   const activatedContractIds = installations.map((i) => i.contractId);
-  const sum = await Contract.aggregate<{ _id: null; total: number }>([
-    { $match: { _id: { $in: activatedContractIds } } },
+
+  // Bonus base = the user's own active commissions for those activated contracts.
+  // (Agent: their CONTRACT_SIGNED commissions; Manager: their override commissions.)
+  const sum = await Commission.aggregate<{ _id: null; total: number }>([
+    {
+      $match: {
+        beneficiaryUserId: new Types.ObjectId(userId),
+        contractId: { $in: activatedContractIds },
+        sourceEvent: "CONTRACT_SIGNED",
+        supersededAt: null,
+      },
+    },
     { $group: { _id: null, total: { $sum: "$amountCents" } } },
   ]);
 
@@ -166,4 +177,27 @@ export async function listBonuses(filter: { userId?: string; period?: string }) 
   if (filter.userId) q.userId = filter.userId;
   if (filter.period) q.period = filter.period;
   return Bonus.find(q).sort({ createdAt: -1 }).limit(200);
+}
+
+/**
+ * Wipe and re-run bonuses for a period. Used when bonus rules change retroactively.
+ * Supersedes existing bonus commissions, deletes Bonus rows so re-run regenerates fresh.
+ */
+export async function recalcForPeriod(period: string) {
+  const existing = await Bonus.find({ period }).select("_id commissionId");
+  const commissionIds = existing.map((b) => b.commissionId).filter(Boolean);
+
+  if (commissionIds.length > 0) {
+    await Commission.updateMany(
+      { _id: { $in: commissionIds }, supersededAt: null },
+      { supersededAt: new Date(), reason: `bonus.recalc for period ${period}` }
+    );
+  }
+  await Bonus.deleteMany({ period });
+
+  logger.info(
+    { period, supersededCommissions: commissionIds.length, deletedBonuses: existing.length },
+    "Period wiped — re-running bonus job"
+  );
+  return runForPeriod(period);
 }

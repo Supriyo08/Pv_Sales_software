@@ -99,7 +99,7 @@ export function SolutionDetail() {
                 required
               />
             </Field>
-            <Field label="Agent commission %">
+            <Field label="Agent commission %" hint="Applied to the contract amount">
               <Input
                 type="number"
                 step="0.01"
@@ -109,7 +109,10 @@ export function SolutionDetail() {
                 onChange={(e) => setAgentPct(e.target.value)}
               />
             </Field>
-            <Field label="Manager commission %">
+            <Field
+              label="Manager override %"
+              hint="Applied to the agent commission (additive — not deducted)"
+            >
               <Input
                 type="number"
                 step="0.01"
@@ -147,8 +150,8 @@ export function SolutionDetail() {
             <Th>Valid from</Th>
             <Th>Valid to</Th>
             <Th>Base price</Th>
-            <Th>Agent</Th>
-            <Th>Manager</Th>
+            <Th title="% of contract amount">Agent %</Th>
+            <Th title="% of agent commission (additive)">Mgr override %</Th>
             <Th>Reason</Th>
           </THead>
           <TBody>

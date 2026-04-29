@@ -50,3 +50,25 @@ export const run: RequestHandler = async (req, res, next) => {
     next(err);
   }
 };
+
+export const recalcPeriod: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const period = req.params.period!;
+    if (!/^\d{4}-\d{2}$/.test(period)) {
+      throw new HttpError(400, "Invalid period format (expected YYYY-MM)");
+    }
+    void audit.log({
+      actorId: req.user.sub,
+      action: "bonus.recalc.period",
+      targetType: "BonusRun",
+      targetId: period,
+      metadata: { period },
+      requestId: req.requestId,
+    });
+    const summary = await bonusService.recalcForPeriod(period);
+    res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+};

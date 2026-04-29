@@ -19,6 +19,7 @@ import {
   Menu,
   History,
   Wallet,
+  FileText,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -55,7 +56,10 @@ const NAV: { section: string; items: NavItem[] }[] = [
   },
   {
     section: "Catalog",
-    items: [{ to: "/solutions", label: "Solutions", icon: Package }],
+    items: [
+      { to: "/solutions", label: "Solutions", icon: Package },
+      { to: "/templates", label: "Contract templates", icon: FileText },
+    ],
   },
   {
     section: "Insights",

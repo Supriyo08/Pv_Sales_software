@@ -19,6 +19,8 @@ import { UsersAdmin } from "./pages/UsersAdmin";
 import { TerritoriesAdmin } from "./pages/TerritoriesAdmin";
 import { Payments } from "./pages/Payments";
 import { AuditLogs } from "./pages/AuditLogs";
+import { TemplatesAdmin } from "./pages/TemplatesAdmin";
+import { TemplateRender } from "./pages/TemplateRender";
 import { NotificationsPage } from "./pages/Notifications";
 import { RequireAuth } from "./components/RequireAuth";
 import { AppLayout } from "./components/AppLayout";
@@ -48,6 +50,8 @@ export default function App() {
               <Route path="/contracts/:id" element={<ContractDetail />} />
               <Route path="/solutions" element={<Solutions />} />
               <Route path="/solutions/:id" element={<SolutionDetail />} />
+              <Route path="/templates" element={<TemplatesAdmin />} />
+              <Route path="/templates/:id/render" element={<TemplateRender />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/payments" element={<Payments />} />

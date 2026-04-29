@@ -161,3 +161,24 @@ export type Territory = {
   parentId: string | null;
   managerId: string | null;
 };
+
+export type ContractTemplate = {
+  _id: string;
+  name: string;
+  description: string;
+  body: string;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  analysis: {
+    placeholders: { tag: string; count: number }[];
+    sections: { id: string; label: string }[];
+  };
+};
+
+export type TemplateRenderResult = {
+  text: string;
+  analysis: ContractTemplate["analysis"];
+  missingPlaceholders: string[];
+};

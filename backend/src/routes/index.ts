@@ -14,6 +14,7 @@ import paymentRoutes from "../modules/payments/payment.routes";
 import reportRoutes from "../modules/reports/report.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
 import auditRoutes from "../modules/audit/audit.routes";
+import templateRoutes from "../modules/templates/template.routes";
 
 const router = Router();
 
@@ -32,5 +33,6 @@ router.use("/payments", paymentRoutes);
 router.use("/reports", reportRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/audit-logs", auditRoutes);
+router.use("/templates", templateRoutes);
 
 export default router;

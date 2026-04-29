@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import { AuditLog } from "./audit.model";
 import { logger } from "../../utils/logger";
 
@@ -16,8 +17,25 @@ const SENSITIVE_KEYS = new Set(["password", "passwordHash", "refreshToken", "acc
 
 function redact(value: unknown): unknown {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map(redact);
   if (typeof value !== "object") return value;
+
+  // Convert special Mongo/JS objects into JSON-friendly primitives BEFORE recursing,
+  // otherwise we end up with the underlying { buffer: { 0: ..., 1: ... } } shape.
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Types.ObjectId) return value.toString();
+  if (Buffer.isBuffer(value)) return value.toString("hex");
+  // Mongoose Decimal128, Long etc. all have toString — fall back if it's not a plain object.
+  const proto = Object.getPrototypeOf(value);
+  const isPlain = proto === Object.prototype || proto === null;
+  if (!isPlain && !Array.isArray(value)) {
+    if (typeof (value as { toString?: () => string }).toString === "function") {
+      const s = (value as { toString: () => string }).toString();
+      if (s !== "[object Object]") return s;
+    }
+  }
+
+  if (Array.isArray(value)) return value.map(redact);
+
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     out[k] = SENSITIVE_KEYS.has(k) ? "[redacted]" : redact(v);
@@ -31,6 +49,10 @@ export async function log(input: AuditInput): Promise<void> {
       ...input,
       before: input.before === undefined ? null : redact(input.before),
       after: input.after === undefined ? null : redact(input.after),
+      metadata:
+        input.metadata === undefined || input.metadata === null
+          ? input.metadata ?? null
+          : (redact(input.metadata) as Record<string, unknown>),
     });
   } catch (err) {
     logger.error({ err, input }, "Failed to write audit log");

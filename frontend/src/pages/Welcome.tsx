@@ -144,16 +144,6 @@ export function Welcome() {
               Sign in
             </Link>
           </motion.div>
-          <motion.p
-            variants={fade}
-            transition={{ duration: 0.5, delay: 0.3 }}
-            className="mt-4 text-xs text-slate-400"
-          >
-            Demo:&nbsp;
-            <code className="font-mono px-1 py-0.5 rounded bg-slate-100">admin@example.com</code>
-            &nbsp;/&nbsp;
-            <code className="font-mono px-1 py-0.5 rounded bg-slate-100">admin1234</code>
-          </motion.p>
         </motion.div>
 
         <motion.div

@@ -63,38 +63,67 @@ export async function generateForContract(
   const versionId = version._id;
 
   const created: CommissionHydrated[] = [];
+  const period = derivePeriod(contract.signedAt ?? contract.createdAt);
 
+  let agentCommissionCents = 0;
   if (contract.agentId && version.agentBp > 0) {
-    const amount = calcCommissionCents(contract.amountCents, version.agentBp);
+    agentCommissionCents = calcCommissionCents(contract.amountCents, version.agentBp);
     const c = await Commission.create({
       contractId,
       beneficiaryUserId: contract.agentId,
       beneficiaryRole: "AGENT",
       sourceEvent: "CONTRACT_SIGNED",
-      amountCents: amount,
+      amountCents: agentCommissionCents,
       currency: contract.currency,
+      period,
       reason,
-      metadata: { solutionVersionId: versionId, bp: version.agentBp },
+      metadata: {
+        solutionVersionId: versionId,
+        bp: version.agentBp,
+        baseCents: contract.amountCents,
+        baseKind: "CONTRACT_AMOUNT",
+      },
     });
     created.push(c);
   }
 
-  if (contract.managerId && version.managerBp > 0) {
-    const amount = calcCommissionCents(contract.amountCents, version.managerBp);
+  // Manager override is calculated on the AGENT commission, not the contract amount.
+  // Additive — does not deduct from the agent.
+  if (
+    contract.managerId &&
+    version.managerBp > 0 &&
+    agentCommissionCents > 0
+  ) {
+    const managerCommissionCents = calcCommissionCents(
+      agentCommissionCents,
+      version.managerBp
+    );
     const c = await Commission.create({
       contractId,
       beneficiaryUserId: contract.managerId,
       beneficiaryRole: "AREA_MANAGER",
       sourceEvent: "CONTRACT_SIGNED",
-      amountCents: amount,
+      amountCents: managerCommissionCents,
       currency: contract.currency,
+      period,
       reason,
-      metadata: { solutionVersionId: versionId, bp: version.managerBp },
+      metadata: {
+        solutionVersionId: versionId,
+        bp: version.managerBp,
+        baseCents: agentCommissionCents,
+        baseKind: "AGENT_COMMISSION",
+      },
     });
     created.push(c);
   }
 
   return created;
+}
+
+function derivePeriod(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
 }
 
 export async function recalculateContractsForSolution(

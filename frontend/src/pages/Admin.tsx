@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play } from "lucide-react";
+import { Plus, Play, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardHeader } from "../components/ui/Card";
@@ -61,6 +61,13 @@ export function Admin() {
       setRunResult({ error: err?.response?.data?.error ?? "Failed" }),
   });
 
+  const recalcBonus = useMutation({
+    mutationFn: async () => (await api.post(`/bonuses/recalc/period/${period}`)).data,
+    onSuccess: (data) => setRunResult(data),
+    onError: (err: { response?: { data?: { error?: string } } }) =>
+      setRunResult({ error: err?.response?.data?.error ?? "Failed" }),
+  });
+
   return (
     <div className="space-y-6">
       <PageHeader title="Bonuses" description="Run monthly bonuses and configure the rules." />
@@ -68,7 +75,9 @@ export function Admin() {
       <Card>
         <h3 className="font-semibold">Run bonus calculation</h3>
         <p className="text-sm text-slate-500 mt-1 mb-4">
-          Idempotent — re-running for the same period is safe (no duplicate bonuses or commissions).
+          <strong>Run now</strong> is idempotent — safe to re-run for the same period.{" "}
+          <strong>Recalculate</strong> wipes existing bonuses for the period and re-runs with
+          current rules — use after editing a bonus rule retroactively.
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Period">
@@ -81,6 +90,22 @@ export function Admin() {
           </Field>
           <Button onClick={() => runBonus.mutate()} loading={runBonus.isPending} icon={<Play className="size-4" />}>
             Run now
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (
+                confirm(
+                  `Recalculate bonuses for ${period}? This supersedes existing bonus commissions for the period and re-runs with current rules.`
+                )
+              ) {
+                recalcBonus.mutate();
+              }
+            }}
+            loading={recalcBonus.isPending}
+            icon={<RefreshCw className="size-4" />}
+          >
+            Recalculate period
           </Button>
         </div>
         {runResult !== null && (
@@ -142,7 +167,7 @@ export function Admin() {
                   onChange={(e) => setForm({ ...form, threshold: e.target.value })}
                 />
               </Field>
-              <Field label="Bonus %">
+              <Field label="Bonus %" hint="Applied to the user's monthly commissions for activated contracts in the period">
                 <Input
                   type="number"
                   step="0.01"

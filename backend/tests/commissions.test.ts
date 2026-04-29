@@ -29,19 +29,40 @@ async function setup(overrides: { agentBp?: number; managerBp?: number; amountCe
 }
 
 describe("commission.service", () => {
-  it("generates agent + manager commissions with correct math", async () => {
+  it("generates agent commission % of contract; manager commission % of agent commission", async () => {
     const { contract, agent, am } = await setup();
     const created = await commissionService.generateForContract(contract._id.toString());
     expect(created).toHaveLength(2);
 
     const agentC = created.find((c) => c.beneficiaryUserId.toString() === agent._id.toString());
     const mgrC = created.find((c) => c.beneficiaryUserId.toString() === am._id.toString());
-    expect(agentC?.amountCents).toBe(180_000); // 1.2M * 15%
-    expect(mgrC?.amountCents).toBe(60_000);    // 1.2M * 5%
+
+    // Agent: 1.2M * 15% = 180k
+    expect(agentC?.amountCents).toBe(180_000);
+    // Manager OVERRIDE on agent commission: 180k * 5% = 9k (additive, not deducted from agent)
+    expect(mgrC?.amountCents).toBe(9_000);
     expect(agentC?.sourceEvent).toBe("CONTRACT_SIGNED");
+    expect(mgrC?.metadata).toMatchObject({
+      baseKind: "AGENT_COMMISSION",
+      baseCents: 180_000,
+    });
   });
 
-  it("skips zero-bp parties", async () => {
+  it("stamps period derived from signedAt", async () => {
+    const { contract } = await setup();
+    const [agentC] = await commissionService.generateForContract(contract._id.toString());
+    expect(agentC?.period).toBe(
+      `${contract.signedAt!.getUTCFullYear()}-${String(contract.signedAt!.getUTCMonth() + 1).padStart(2, "0")}`
+    );
+  });
+
+  it("skips manager when agent commission is zero", async () => {
+    const { contract } = await setup({ agentBp: 0, managerBp: 500 });
+    const created = await commissionService.generateForContract(contract._id.toString());
+    expect(created).toHaveLength(0);
+  });
+
+  it("skips zero-bp manager", async () => {
     const { contract } = await setup({ managerBp: 0 });
     const created = await commissionService.generateForContract(contract._id.toString());
     expect(created).toHaveLength(1);
@@ -78,15 +99,15 @@ describe("commission.service", () => {
     expect(fresh).toHaveLength(2);
     expect(fresh.map((c) => c._id.toString()).sort()).not.toEqual(originalIds.sort());
 
-    // Original rows still exist with original amounts (immutable) but supersededAt set
+    // Originals: immutable amounts, but superseded
     const allOriginal = await Commission.find({ _id: { $in: originalIds } });
     expect(allOriginal).toHaveLength(2);
     expect(allOriginal.every((c) => c.supersededAt !== null)).toBe(true);
     expect(allOriginal.map((c) => c.amountCents).sort()).toEqual(originalAmounts.sort());
 
-    // New rows have new amounts (1.2M * 20% = 240k, 1.2M * 10% = 120k)
+    // New: agent = 1.2M * 20% = 240k; manager OVERRIDE = 240k * 10% = 24k
     expect(fresh.find((c) => c.amountCents === 240_000)).toBeTruthy();
-    expect(fresh.find((c) => c.amountCents === 120_000)).toBeTruthy();
+    expect(fresh.find((c) => c.amountCents === 24_000)).toBeTruthy();
   });
 
   it("totalEarnedCents sums only active commissions", async () => {

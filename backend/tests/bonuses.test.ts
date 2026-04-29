@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as bonusService from "../src/modules/bonuses/bonus.service";
+import * as commissionService from "../src/modules/commissions/commission.service";
 import { Bonus } from "../src/modules/bonuses/bonus.model";
 import { Commission } from "../src/modules/commissions/commission.model";
 import { Installation } from "../src/modules/installations/installation.model";
@@ -26,6 +27,8 @@ async function activatedContract(opts: {
     solutionVersionId: opts.versionId,
     amountCents: opts.amountCents,
   });
+  // Mirror the production flow: signing generates CONTRACT_SIGNED commissions.
+  await commissionService.generateForContract(contract._id.toString());
   await Installation.create({
     contractId: contract._id,
     status: "ACTIVATED",
@@ -53,12 +56,13 @@ describe("bonus.service.runForPeriod", () => {
     expect(summary.bonusesCreated).toBe(0);
   });
 
-  it("creates AGENT bonus when threshold met", async () => {
+  it("creates AGENT bonus = bonus% of agent's monthly commission", async () => {
     const admin = await makeUser({ role: "ADMIN" });
     const am = await makeUser({ role: "AREA_MANAGER" });
     const agent = await makeUser({ role: "AGENT", managerId: am._id.toString() });
+    // Default: agentBp=1500 (15%), managerBp=500 (5%)
     const { version } = await makeSolutionWithVersion(admin._id.toString());
-    await makeBonusRule({ threshold: 2, basisPoints: 1000 });
+    await makeBonusRule({ threshold: 2, basisPoints: 1000 }); // 10%
     for (let i = 0; i < 2; i++) {
       await activatedContract({
         agentId: agent._id.toString(),
@@ -73,8 +77,10 @@ describe("bonus.service.runForPeriod", () => {
 
     const bonuses = await Bonus.find({ userId: agent._id });
     expect(bonuses).toHaveLength(1);
-    // base = 1,000,000c, bp = 1000 → bonus = 100,000c
-    expect(bonuses[0]?.bonusAmountCents).toBe(100_000);
+    // Agent commission per contract: 500k * 15% = 75k. Two contracts = 150k.
+    // Bonus: 150k * 10% = 15k.
+    expect(bonuses[0]?.baseAmountCents).toBe(150_000);
+    expect(bonuses[0]?.bonusAmountCents).toBe(15_000);
     expect(bonuses[0]?.qualifierCount).toBe(2);
   });
 
@@ -101,7 +107,6 @@ describe("bonus.service.runForPeriod", () => {
     expect(r2.bonusesSkipped).toBeGreaterThanOrEqual(1);
     expect(r3.bonusesCreated).toBe(0);
 
-    // Only one bonus + one commission row per (user, period, rule)
     expect(await Bonus.countDocuments({ userId: agent._id })).toBe(1);
     expect(
       await Commission.countDocuments({
@@ -117,7 +122,6 @@ describe("bonus.service.runForPeriod", () => {
     const agent = await makeUser({ role: "AGENT", managerId: am._id.toString() });
     const { version } = await makeSolutionWithVersion(admin._id.toString());
     await makeBonusRule({ threshold: 2, basisPoints: 1000 });
-    // 1 in March, 1 in April → April should NOT qualify (only 1 in period)
     await activatedContract({
       agentId: agent._id.toString(),
       managerId: am._id.toString(),
@@ -136,19 +140,20 @@ describe("bonus.service.runForPeriod", () => {
     expect(r.bonusesCreated).toBe(0);
   });
 
-  it("network bonus aggregates across an area manager's agents", async () => {
+  it("network bonus = bonus% of MANAGER's monthly commission, threshold counts network activations", async () => {
     const admin = await makeUser({ role: "ADMIN" });
     const am = await makeUser({ role: "AREA_MANAGER" });
     const agent1 = await makeUser({ role: "AGENT", managerId: am._id.toString() });
     const agent2 = await makeUser({ role: "AGENT", managerId: am._id.toString() });
     const { version } = await makeSolutionWithVersion(admin._id.toString());
+    // Default version: agentBp=1500, managerBp=500
     await makeBonusRule({
       role: "AREA_MANAGER",
       conditionType: "NETWORK_INSTALLATIONS_GTE",
       threshold: 3,
-      basisPoints: 500,
+      basisPoints: 500, // 5%
     });
-    // 2 contracts under agent1, 1 under agent2 = 3 total network installations
+    // 2 × 600k under agent1, 1 × 800k under agent2
     for (let i = 0; i < 2; i++) {
       await activatedContract({
         agentId: agent1._id.toString(),
@@ -171,10 +176,50 @@ describe("bonus.service.runForPeriod", () => {
 
     const bonuses = await Bonus.find({ userId: am._id });
     expect(bonuses).toHaveLength(1);
-    // base = 600k + 600k + 800k = 2M; bp = 500 → 100k bonus
-    expect(bonuses[0]?.baseAmountCents).toBe(2_000_000);
-    expect(bonuses[0]?.bonusAmountCents).toBe(100_000);
+    // Agent commissions per 600k contract: 600k*15% = 90k. Manager override: 90k*5% = 4500. ×2 = 9000.
+    // Agent commission for 800k: 800k*15% = 120k. Manager override: 120k*5% = 6000.
+    // Total manager commissions for activated contracts: 4500 + 4500 + 6000 = 15_000.
+    // Bonus: 15_000 * 5% = 750.
+    expect(bonuses[0]?.baseAmountCents).toBe(15_000);
+    expect(bonuses[0]?.bonusAmountCents).toBe(750);
     expect(bonuses[0]?.qualifierCount).toBe(3);
+  });
+});
+
+describe("bonus.service.recalcForPeriod", () => {
+  it("supersedes prior bonus commissions and re-runs with current rules", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const am = await makeUser({ role: "AREA_MANAGER" });
+    const agent = await makeUser({ role: "AGENT", managerId: am._id.toString() });
+    const { version } = await makeSolutionWithVersion(admin._id.toString());
+    const rule = await makeBonusRule({ threshold: 1, basisPoints: 1000 });
+    await activatedContract({
+      agentId: agent._id.toString(),
+      managerId: am._id.toString(),
+      amountCents: 500_000,
+      versionId: version._id.toString(),
+      activatedAt: new Date("2026-04-10"),
+    });
+
+    await bonusService.runForPeriod("2026-04");
+    expect((await Bonus.find({ period: "2026-04" })).length).toBe(1);
+
+    // Admin updates the rule to 20%
+    rule.basisPoints = 2000;
+    await rule.save();
+
+    await bonusService.recalcForPeriod("2026-04");
+    const bonuses = await Bonus.find({ period: "2026-04" });
+    expect(bonuses).toHaveLength(1);
+    // Agent commission = 75k; new bonus = 75k * 20% = 15k
+    expect(bonuses[0]?.bonusAmountCents).toBe(15_000);
+
+    // Old bonus commission row was superseded, not deleted
+    const oldBonusCommissions = await Commission.find({
+      sourceEvent: "BONUS_AGENT_INSTALLATIONS",
+      supersededAt: { $ne: null },
+    });
+    expect(oldBonusCommissions.length).toBeGreaterThanOrEqual(1);
   });
 });
 

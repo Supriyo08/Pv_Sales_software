@@ -127,12 +127,13 @@ async function sumPaidCents(paymentId: string): Promise<number> {
 }
 
 async function sumActiveCommissionsForPeriod(userId: string, period: string): Promise<number> {
+  const { Types } = await import("mongoose");
   const result = await Commission.aggregate<{ _id: null; total: number }>([
     {
       $match: {
-        beneficiaryUserId: { $eq: new (await import("mongoose")).Types.ObjectId(userId) },
+        beneficiaryUserId: new Types.ObjectId(userId),
         supersededAt: null,
-        $or: [{ period }, { period: null }],
+        period,
       },
     },
     { $group: { _id: null, total: { $sum: "$amountCents" } } },

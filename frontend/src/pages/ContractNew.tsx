@@ -145,31 +145,39 @@ export function ContractNew() {
               required
             />
           </Field>
-          {previewValid && (
-            <div className="rounded-lg bg-brand-50 border border-brand-200 px-4 py-3 text-sm">
-              <div className="font-medium text-brand-900 mb-2">When signed, will generate:</div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs text-brand-700">Agent commission</div>
-                  <div className="font-semibold text-brand-900">
-                    {formatCents(
-                      Math.round((amountNum * 100 * selectedVersion!.agentBp) / 10000),
-                      selectedVersion!.currency
-                    )}
+          {previewValid && (() => {
+            const agentCents = Math.round(
+              (amountNum * 100 * selectedVersion!.agentBp) / 10000
+            );
+            const managerCents = Math.round(
+              (agentCents * selectedVersion!.managerBp) / 10000
+            );
+            return (
+              <div className="rounded-lg bg-brand-50 border border-brand-200 px-4 py-3 text-sm">
+                <div className="font-medium text-brand-900 mb-2">When signed, will generate:</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-xs text-brand-700">Agent commission</div>
+                    <div className="font-semibold text-brand-900">
+                      {formatCents(agentCents, selectedVersion!.currency)}
+                    </div>
+                    <div className="text-[11px] text-brand-700/80">
+                      {selectedVersion!.agentBp / 100}% of contract
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs text-brand-700">Manager commission</div>
-                  <div className="font-semibold text-brand-900">
-                    {formatCents(
-                      Math.round((amountNum * 100 * selectedVersion!.managerBp) / 10000),
-                      selectedVersion!.currency
-                    )}
+                  <div>
+                    <div className="text-xs text-brand-700">Manager override</div>
+                    <div className="font-semibold text-brand-900">
+                      {formatCents(managerCents, selectedVersion!.currency)}
+                    </div>
+                    <div className="text-[11px] text-brand-700/80">
+                      {selectedVersion!.managerBp / 100}% of agent commission
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
