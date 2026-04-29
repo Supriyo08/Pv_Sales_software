@@ -39,16 +39,18 @@ async function evaluateForUser(
   conditionType: string,
   from: Date,
   to: Date
-): Promise<{ qualifierCount: number; baseAmountCents: number }> {
+): Promise<{ qualifierCount: number; baseAmountCents: number; reason?: string }> {
   let agentIds: string[];
   if (conditionType === "AGENT_INSTALLATIONS_GTE") {
     agentIds = [userId];
   } else if (conditionType === "NETWORK_INSTALLATIONS_GTE") {
-    if (role !== "AREA_MANAGER") return { qualifierCount: 0, baseAmountCents: 0 };
+    if (role !== "AREA_MANAGER")
+      return { qualifierCount: 0, baseAmountCents: 0, reason: "wrong-role-for-network" };
     agentIds = await activeAgentIdsUnderManager(userId);
-    if (agentIds.length === 0) return { qualifierCount: 0, baseAmountCents: 0 };
+    if (agentIds.length === 0)
+      return { qualifierCount: 0, baseAmountCents: 0, reason: "no-agents-in-network" };
   } else {
-    return { qualifierCount: 0, baseAmountCents: 0 };
+    return { qualifierCount: 0, baseAmountCents: 0, reason: "unknown-condition" };
   }
 
   const contractIds = await Contract.find({
@@ -56,19 +58,19 @@ async function evaluateForUser(
     status: "SIGNED",
   }).distinct("_id");
 
-  if (contractIds.length === 0) return { qualifierCount: 0, baseAmountCents: 0 };
+  if (contractIds.length === 0)
+    return { qualifierCount: 0, baseAmountCents: 0, reason: "no-signed-contracts" };
 
   const installations = await Installation.find({
     contractId: { $in: contractIds },
     activatedAt: { $gte: from, $lt: to },
   }).select("contractId");
 
-  if (installations.length === 0) return { qualifierCount: 0, baseAmountCents: 0 };
+  if (installations.length === 0)
+    return { qualifierCount: 0, baseAmountCents: 0, reason: "no-activations-in-period" };
 
   const activatedContractIds = installations.map((i) => i.contractId);
 
-  // Bonus base = the user's own active commissions for those activated contracts.
-  // (Agent: their CONTRACT_SIGNED commissions; Manager: their override commissions.)
   const sum = await Commission.aggregate<{ _id: null; total: number }>([
     {
       $match: {
@@ -87,7 +89,46 @@ async function evaluateForUser(
   };
 }
 
-export async function runForPeriod(period: string) {
+export type CandidateOutcome = {
+  userId: string;
+  fullName: string;
+  ruleName: string;
+  ruleId: string;
+  qualifierCount: number;
+  threshold: number;
+  baseAmountCents: number;
+  bonusAmountCents: number;
+  status:
+    | "CREATED"
+    | "ALREADY_EXISTED"
+    | "BELOW_THRESHOLD"
+    | "ZERO_BASE"
+    | "WRONG_ROLE_FOR_NETWORK"
+    | "NO_AGENTS_IN_NETWORK"
+    | "NO_SIGNED_CONTRACTS"
+    | "NO_ACTIVATIONS_IN_PERIOD"
+    | "DUPLICATE_KEY";
+  message?: string;
+};
+
+export type RunSummary = {
+  period: string;
+  rulesEvaluated: number;
+  candidatesConsidered: number;
+  bonusesCreated: number;
+  bonusesSkippedExisting: number;
+  bonusesNotQualified: number;
+  outcomes: CandidateOutcome[];
+};
+
+const REASON_TO_STATUS: Record<string, CandidateOutcome["status"]> = {
+  "wrong-role-for-network": "WRONG_ROLE_FOR_NETWORK",
+  "no-agents-in-network": "NO_AGENTS_IN_NETWORK",
+  "no-signed-contracts": "NO_SIGNED_CONTRACTS",
+  "no-activations-in-period": "NO_ACTIVATIONS_IN_PERIOD",
+};
+
+export async function runForPeriod(period: string): Promise<RunSummary> {
   const { from, to } = periodBounds(period);
   const evalDate = new Date(to.getTime() - 1);
   const rules = await BonusRule.find({
@@ -96,34 +137,100 @@ export async function runForPeriod(period: string) {
     $or: [{ validTo: null }, { validTo: { $gt: evalDate } }],
   });
 
-  const summary = {
-    period,
-    rulesEvaluated: rules.length,
-    bonusesCreated: 0,
-    bonusesSkipped: 0,
-  };
+  const outcomes: CandidateOutcome[] = [];
+  let bonusesCreated = 0;
+  let bonusesSkippedExisting = 0;
+  let bonusesNotQualified = 0;
+  let candidatesConsidered = 0;
 
   for (const rule of rules) {
-    const candidates = await User.find({ role: rule.role, deletedAt: null }).select("_id role");
+    const candidates = await User.find({ role: rule.role, deletedAt: null }).select(
+      "_id role fullName"
+    );
+
     for (const candidate of candidates) {
+      candidatesConsidered++;
       const userId = candidate._id.toString();
+      const fullName = (candidate as { fullName?: string }).fullName ?? "(unknown)";
+
       const existing = await Bonus.findOne({ userId, period, ruleId: rule._id });
       if (existing) {
-        summary.bonusesSkipped++;
+        bonusesSkippedExisting++;
+        outcomes.push({
+          userId,
+          fullName,
+          ruleName: rule.name,
+          ruleId: rule._id.toString(),
+          qualifierCount: existing.qualifierCount,
+          threshold: rule.threshold,
+          baseAmountCents: existing.baseAmountCents,
+          bonusAmountCents: existing.bonusAmountCents,
+          status: "ALREADY_EXISTED",
+        });
         continue;
       }
 
-      const { qualifierCount, baseAmountCents } = await evaluateForUser(
+      const evalResult = await evaluateForUser(
         userId,
         candidate.role as UserRole,
         rule.conditionType,
         from,
         to
       );
-      if (qualifierCount < rule.threshold) continue;
 
-      const bonusAmountCents = calcCommissionCents(baseAmountCents, rule.basisPoints);
-      if (bonusAmountCents === 0) continue;
+      if (evalResult.reason) {
+        bonusesNotQualified++;
+        outcomes.push({
+          userId,
+          fullName,
+          ruleName: rule.name,
+          ruleId: rule._id.toString(),
+          qualifierCount: evalResult.qualifierCount,
+          threshold: rule.threshold,
+          baseAmountCents: evalResult.baseAmountCents,
+          bonusAmountCents: 0,
+          status: REASON_TO_STATUS[evalResult.reason] ?? "BELOW_THRESHOLD",
+        });
+        continue;
+      }
+
+      if (evalResult.qualifierCount < rule.threshold) {
+        bonusesNotQualified++;
+        outcomes.push({
+          userId,
+          fullName,
+          ruleName: rule.name,
+          ruleId: rule._id.toString(),
+          qualifierCount: evalResult.qualifierCount,
+          threshold: rule.threshold,
+          baseAmountCents: evalResult.baseAmountCents,
+          bonusAmountCents: 0,
+          status: "BELOW_THRESHOLD",
+        });
+        continue;
+      }
+
+      const bonusAmountCents = calcCommissionCents(
+        evalResult.baseAmountCents,
+        rule.basisPoints
+      );
+      if (bonusAmountCents === 0) {
+        bonusesNotQualified++;
+        outcomes.push({
+          userId,
+          fullName,
+          ruleName: rule.name,
+          ruleId: rule._id.toString(),
+          qualifierCount: evalResult.qualifierCount,
+          threshold: rule.threshold,
+          baseAmountCents: evalResult.baseAmountCents,
+          bonusAmountCents: 0,
+          status: "ZERO_BASE",
+          message:
+            "Threshold met but base commission was 0 (likely no commissions on activated contracts).",
+        });
+        continue;
+      }
 
       const commission = await Commission.create({
         beneficiaryUserId: userId,
@@ -138,8 +245,8 @@ export async function runForPeriod(period: string) {
         reason: `Bonus rule: ${rule.name}`,
         metadata: {
           ruleId: rule._id,
-          qualifierCount,
-          baseAmountCents,
+          qualifierCount: evalResult.qualifierCount,
+          baseAmountCents: evalResult.baseAmountCents,
           basisPoints: rule.basisPoints,
         },
       });
@@ -149,18 +256,40 @@ export async function runForPeriod(period: string) {
           userId,
           period,
           ruleId: rule._id,
-          qualifierCount,
-          baseAmountCents,
+          qualifierCount: evalResult.qualifierCount,
+          baseAmountCents: evalResult.baseAmountCents,
           basisPoints: rule.basisPoints,
           bonusAmountCents,
           commissionId: commission._id,
         });
-        summary.bonusesCreated++;
+        bonusesCreated++;
+        outcomes.push({
+          userId,
+          fullName,
+          ruleName: rule.name,
+          ruleId: rule._id.toString(),
+          qualifierCount: evalResult.qualifierCount,
+          threshold: rule.threshold,
+          baseAmountCents: evalResult.baseAmountCents,
+          bonusAmountCents,
+          status: "CREATED",
+        });
         events.emit("bonus.calculated", { userId, period, amountCents: bonusAmountCents });
       } catch (err) {
         await Commission.deleteOne({ _id: commission._id });
         if ((err as { code?: number }).code === 11000) {
-          summary.bonusesSkipped++;
+          bonusesSkippedExisting++;
+          outcomes.push({
+            userId,
+            fullName,
+            ruleName: rule.name,
+            ruleId: rule._id.toString(),
+            qualifierCount: evalResult.qualifierCount,
+            threshold: rule.threshold,
+            baseAmountCents: evalResult.baseAmountCents,
+            bonusAmountCents,
+            status: "DUPLICATE_KEY",
+          });
           continue;
         }
         throw err;
@@ -168,7 +297,27 @@ export async function runForPeriod(period: string) {
     }
   }
 
-  logger.info(summary, "Bonus run complete");
+  const summary: RunSummary = {
+    period,
+    rulesEvaluated: rules.length,
+    candidatesConsidered,
+    bonusesCreated,
+    bonusesSkippedExisting,
+    bonusesNotQualified,
+    outcomes,
+  };
+
+  logger.info(
+    {
+      period,
+      rulesEvaluated: summary.rulesEvaluated,
+      candidatesConsidered,
+      bonusesCreated,
+      bonusesSkippedExisting,
+      bonusesNotQualified,
+    },
+    "Bonus run complete"
+  );
   return summary;
 }
 
@@ -183,7 +332,7 @@ export async function listBonuses(filter: { userId?: string; period?: string }) 
  * Wipe and re-run bonuses for a period. Used when bonus rules change retroactively.
  * Supersedes existing bonus commissions, deletes Bonus rows so re-run regenerates fresh.
  */
-export async function recalcForPeriod(period: string) {
+export async function recalcForPeriod(period: string): Promise<RunSummary> {
   const existing = await Bonus.find({ period }).select("_id commissionId");
   const commissionIds = existing.map((b) => b.commissionId).filter(Boolean);
 

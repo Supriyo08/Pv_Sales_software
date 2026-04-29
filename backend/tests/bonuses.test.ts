@@ -104,7 +104,7 @@ describe("bonus.service.runForPeriod", () => {
 
     expect(r1.bonusesCreated).toBe(1);
     expect(r2.bonusesCreated).toBe(0);
-    expect(r2.bonusesSkipped).toBeGreaterThanOrEqual(1);
+    expect(r2.bonusesSkippedExisting).toBeGreaterThanOrEqual(1);
     expect(r3.bonusesCreated).toBe(0);
 
     expect(await Bonus.countDocuments({ userId: agent._id })).toBe(1);
@@ -227,5 +227,64 @@ describe("bonus.service.previousPeriod", () => {
   it("returns previous calendar month", () => {
     expect(bonusService.previousPeriod(new Date("2026-04-15"))).toBe("2026-03");
     expect(bonusService.previousPeriod(new Date("2026-01-15"))).toBe("2025-12");
+  });
+});
+
+describe("bonus run diagnostics", () => {
+  it("reports BELOW_THRESHOLD with actual count and base", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const am = await makeUser({ role: "AREA_MANAGER" });
+    const agent = await makeUser({
+      role: "AGENT",
+      managerId: am._id.toString(),
+      fullName: "Agent Below",
+    });
+    const { version } = await makeSolutionWithVersion(admin._id.toString());
+    await makeBonusRule({ threshold: 5, basisPoints: 1000 });
+    await activatedContract({
+      agentId: agent._id.toString(),
+      managerId: am._id.toString(),
+      amountCents: 1_000_000,
+      versionId: version._id.toString(),
+      activatedAt: new Date("2026-04-15"),
+    });
+    const summary = await bonusService.runForPeriod("2026-04");
+    const outcome = summary.outcomes.find((o) => o.userId === agent._id.toString());
+    expect(outcome?.status).toBe("BELOW_THRESHOLD");
+    expect(outcome?.qualifierCount).toBe(1);
+    expect(outcome?.baseAmountCents).toBe(150_000); // 1M * 15%
+    expect(outcome?.threshold).toBe(5);
+  });
+
+  it("reports NO_ACTIVATIONS_IN_PERIOD when no installs activated", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const am = await makeUser({ role: "AREA_MANAGER" });
+    const agent = await makeUser({ role: "AGENT", managerId: am._id.toString() });
+    await makeSolutionWithVersion(admin._id.toString());
+    await makeBonusRule({ threshold: 1, basisPoints: 1000 });
+    void agent;
+    void am;
+    const summary = await bonusService.runForPeriod("2026-04");
+    const outcome = summary.outcomes.find((o) => o.userId === agent._id.toString());
+    expect(outcome?.status).toBe("NO_SIGNED_CONTRACTS");
+  });
+
+  it("reports CREATED with full math when bonus generated", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const am = await makeUser({ role: "AREA_MANAGER" });
+    const agent = await makeUser({ role: "AGENT", managerId: am._id.toString() });
+    const { version } = await makeSolutionWithVersion(admin._id.toString());
+    await makeBonusRule({ threshold: 1, basisPoints: 1000 });
+    await activatedContract({
+      agentId: agent._id.toString(),
+      managerId: am._id.toString(),
+      amountCents: 500_000,
+      versionId: version._id.toString(),
+      activatedAt: new Date("2026-04-10"),
+    });
+    const summary = await bonusService.runForPeriod("2026-04");
+    const outcome = summary.outcomes.find((o) => o.userId === agent._id.toString());
+    expect(outcome?.status).toBe("CREATED");
+    expect(outcome?.bonusAmountCents).toBe(7_500); // 75k * 10%
   });
 });

@@ -27,7 +27,12 @@ export async function getByContractId(contractId: string) {
   return i;
 }
 
-export async function transition(id: string, nextStatus: InstallationStatus, notes?: string) {
+export async function transition(
+  id: string,
+  nextStatus: InstallationStatus,
+  notes?: string,
+  occurredAt?: Date
+) {
   const inst = await Installation.findById(id);
   if (!inst) throw new HttpError(404, "Installation not found");
 
@@ -36,9 +41,14 @@ export async function transition(id: string, nextStatus: InstallationStatus, not
     throw new HttpError(400, `Cannot move from ${current} to ${nextStatus} (forward-only)`);
   }
 
+  const when = occurredAt ?? new Date();
+  if (when > new Date(Date.now() + 60_000)) {
+    throw new HttpError(400, "Milestone date cannot be in the future");
+  }
+
   inst.status = nextStatus;
-  inst.milestones.push({ status: nextStatus, date: new Date(), notes: notes ?? "" });
-  if (nextStatus === "ACTIVATED") inst.activatedAt = new Date();
+  inst.milestones.push({ status: nextStatus, date: when, notes: notes ?? "" });
+  if (nextStatus === "ACTIVATED") inst.activatedAt = when;
   await inst.save();
 
   if (nextStatus === "ACTIVATED") {
