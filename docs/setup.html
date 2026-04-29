@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Photovoltaic Sales Network — Local Setup</title>
+<style>
+  @page { size: A4; margin: 22mm 18mm; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #0f172a;
+    font-size: 10.5pt;
+    line-height: 1.5;
+    max-width: 100%;
+  }
+  h1 {
+    font-size: 22pt;
+    margin: 0 0 4pt;
+    letter-spacing: -0.4pt;
+  }
+  h2 {
+    font-size: 14pt;
+    margin: 22pt 0 6pt;
+    padding-bottom: 4pt;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  h3 {
+    font-size: 11.5pt;
+    margin: 14pt 0 4pt;
+  }
+  p { margin: 0 0 8pt; }
+  ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
+  li { margin: 0 0 3pt; }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5pt;
+    background: #f1f5f9;
+    padding: 1pt 4pt;
+    border-radius: 3pt;
+  }
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9pt;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 10pt 12pt;
+    border-radius: 5pt;
+    margin: 0 0 10pt;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 9.5pt;
+    margin: 0 0 12pt;
+  }
+  th, td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 5pt 6pt;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: #f8fafc;
+    font-weight: 600;
+  }
+  .meta {
+    color: #64748b;
+    font-size: 9.5pt;
+    margin: 0 0 14pt;
+  }
+  .stack {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6pt;
+    padding: 10pt 12pt;
+    margin: 0 0 14pt;
+  }
+  .stack p { margin: 0 0 4pt; }
+  .stack p:last-child { margin: 0; }
+  .callout {
+    background: #fef3c7;
+    border-left: 3pt solid #f59e0b;
+    padding: 8pt 10pt;
+    border-radius: 0 5pt 5pt 0;
+    margin: 8pt 0 12pt;
+    font-size: 10pt;
+  }
+  .callout strong { color: #78350f; }
+  .note {
+    background: #eff6ff;
+    border-left: 3pt solid #3b82f6;
+    padding: 8pt 10pt;
+    border-radius: 0 5pt 5pt 0;
+    margin: 8pt 0 12pt;
+    font-size: 10pt;
+  }
+  h2 { page-break-after: avoid; }
+  h3 { page-break-after: avoid; }
+  pre, table { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>Photovoltaic Sales Network</h1>
+<p class="meta">Local setup &amp; run instructions · Updated 2026-04-29</p>
+
+<div class="stack">
+  <p><strong>Backend</strong> — Node.js + Express + MongoDB + Redis (BullMQ workers), TypeScript, Zod, JWT auth</p>
+  <p><strong>Frontend</strong> — React 19 + Vite 8 + TanStack Query + Tailwind CSS v4 + Radix UI</p>
+  <p><strong>Infra</strong> — Docker Compose for local Mongo + Redis</p>
+</div>
+
+<h2>1. Prerequisites</h2>
+<ul>
+  <li><strong>Node.js</strong> ≥ 20 — backend uses <code>tsx</code> watch mode; frontend targets Vite 8.</li>
+  <li><strong>npm</strong> ≥ 10.</li>
+  <li><strong>Docker</strong> + <strong>Docker Compose</strong> for the bundled Mongo + Redis. (Native installs work too — just point the env vars at them.)</li>
+  <li>A modern browser; the SPA is served on <code>http://localhost:5173</code>.</li>
+</ul>
+
+<h2>2. One-time setup</h2>
+
+<h3>2.1 Clone &amp; install</h3>
+<pre><code>git clone &lt;repo-url&gt; photovoltaic
+cd photovoltaic</code></pre>
+
+<h3>2.2 Start Mongo + Redis</h3>
+<pre><code>docker compose up -d</code></pre>
+<p>Mongo binds to <code>localhost:27017</code>, Redis to <code>localhost:6379</code>. Volumes <code>mongo_data</code> and <code>redis_data</code> persist between restarts.</p>
+
+<h3>2.3 Backend</h3>
+<pre><code>cd backend
+cp .env.example .env       # then edit JWT secrets — see env table below
+npm install
+npm run dev                # API on http://localhost:4000</code></pre>
+
+<h3>2.4 Frontend</h3>
+<pre><code>cd ../frontend
+cp .env.example .env
+npm install
+npm run dev                # SPA on http://localhost:5173</code></pre>
+
+<p>Open <code>http://localhost:5173/</code> and sign up. The app runs in dev mode with HMR.</p>
+
+<h2>3. Environment variables</h2>
+
+<h3>3.1 Backend (<code>backend/.env</code>)</h3>
+<table>
+  <thead>
+    <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>NODE_ENV</code></td><td><code>development</code></td><td>One of <code>development</code> / <code>test</code> / <code>production</code></td></tr>
+    <tr><td><code>PORT</code></td><td><code>4000</code></td><td>API listen port</td></tr>
+    <tr><td><code>MONGO_URI</code></td><td><code>mongodb://localhost:27017/photovoltaic</code></td><td>MongoDB connection string</td></tr>
+    <tr><td><code>REDIS_URL</code></td><td><code>redis://localhost:6379</code></td><td>Redis connection (used by BullMQ)</td></tr>
+    <tr><td><code>JWT_ACCESS_SECRET</code></td><td><em>required, ≥ 16 chars</em></td><td>Signing key for short-lived access tokens</td></tr>
+    <tr><td><code>JWT_REFRESH_SECRET</code></td><td><em>required, ≥ 16 chars</em></td><td>Signing key for refresh tokens</td></tr>
+    <tr><td><code>JWT_ACCESS_TTL</code></td><td><code>15m</code></td><td>Access-token lifetime (vercel <code>ms</code> syntax)</td></tr>
+    <tr><td><code>JWT_REFRESH_TTL</code></td><td><code>7d</code></td><td>Refresh-token lifetime</td></tr>
+    <tr><td><code>CORS_ORIGIN</code></td><td><code>http://localhost:5173</code></td><td>Allowed origin for the SPA</td></tr>
+    <tr><td><code>LOG_LEVEL</code></td><td><code>info</code></td><td>Pino log level (<code>trace</code> / <code>debug</code> / <code>info</code> / <code>warn</code> / <code>error</code>)</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>Important.</strong> Replace the placeholder <code>change-me-*</code> JWT secrets in <code>.env.example</code> before booting. The Zod schema in <code>src/config/env.ts</code> rejects secrets shorter than 16 characters and exits the process.
+</div>
+
+<h3>3.2 Frontend (<code>frontend/.env</code>)</h3>
+<table>
+  <thead>
+    <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>VITE_API_BASE</code></td><td><code>http://localhost:4000/v1</code></td><td>Base URL the axios client uses (<code>src/lib/api.ts</code>)</td></tr>
+  </tbody>
+</table>
+<p>Vite reads <code>.env</code> at startup — restart <code>npm run dev</code> after edits.</p>
+
+<h2>4. Scripts</h2>
+
+<h3>Backend</h3>
+<pre><code>npm run dev          # tsx watch — auto-reload on changes
+npm run build        # tsc → dist/
+npm start            # node dist/index.js (after build)
+npm run typecheck    # tsc --noEmit
+npm test             # vitest run (uses mongodb-memory-server — no docker needed)
+npm run test:watch</code></pre>
+
+<h3>Frontend</h3>
+<pre><code>npm run dev          # Vite dev server :5173
+npm run build        # tsc -b &amp;&amp; vite build → dist/
+npm run preview      # preview the production build
+npm run lint         # eslint .</code></pre>
+
+<h2>5. Background workers</h2>
+<p>The backend boots BullMQ workers in-process from <code>src/index.ts</code>:</p>
+<ul>
+  <li><strong>commission handlers</strong> — emit commissions on contract activation.</li>
+  <li><strong>notification handlers</strong> — fan-out in-app notifications.</li>
+  <li><strong>bonus worker</strong> — monthly bonus job; <code>scheduleMonthlyBonus()</code> registers a recurring BullMQ job on Redis.</li>
+</ul>
+<p>Workers share the API process today. To split them, move <code>startBonusWorker()</code> and <code>register*Handlers()</code> into a separate entry point and run two processes against the same Redis.</p>
+
+<h2>6. Health check &amp; API</h2>
+<p>The API exposes <code>GET /health</code> returning <code>{ status: "ok", mongo: "up" }</code>. All business routes live under <code>/v1</code>.</p>
+<p>Modules (each at <code>backend/src/modules/&lt;name&gt;</code>): <code>auth</code>, <code>users</code>, <code>leads</code>, <code>customers</code>, <code>contracts</code>, <code>installations</code>, <code>documents</code>, <code>catalog</code> (solutions / bonus rules), <code>commissions</code>, <code>bonuses</code>, <code>payments</code>, <code>notifications</code>, <code>reports</code>, <code>territories</code>, <code>audit</code>.</p>
+
+<h2>7. Notes &amp; assumptions</h2>
+
+<ul>
+  <li><strong>First-user bootstrap.</strong> No seed script ships with the repo. The first user signs up through the SPA and must be promoted to <code>ADMIN</code> manually — update the user's <code>role</code> field in the <code>users</code> collection (e.g. via Mongo Compass or a one-off <code>mongosh</code> command). Once one admin exists, further role assignments can be done in-app.</li>
+
+  <li><strong>Tests bypass Docker.</strong> Backend tests in <code>backend/tests/</code> use <code>mongodb-memory-server</code> and spin up an in-process Mongo — no docker compose or local Mongo needed. Redis-dependent code is mocked or not exercised.</li>
+
+  <li><strong>Workers run in-process.</strong> For local dev there is no separate worker container; all BullMQ workers boot inside the API process. Production deployments should consider splitting them.</li>
+
+  <li><strong>JWT auth, refresh-on-401.</strong> The frontend's axios interceptor (<code>frontend/src/lib/api.ts</code>) automatically calls <code>POST /v1/auth/refresh</code> when an access token expires, retries the original request once, and clears auth state if refresh fails. There is a single in-flight refresh promise to avoid stampedes.</li>
+
+  <li><strong>CORS is single-origin.</strong> <code>CORS_ORIGIN</code> accepts one URL. If you serve the SPA from a different origin (e.g. behind a reverse proxy in production), update it accordingly.</li>
+
+  <li><strong>Tailwind CSS v4.</strong> The frontend uses the v4 plugin model (<code>@tailwindcss/vite</code>) — there is no <code>tailwind.config.{js,ts}</code>. Theme tokens are declared inline in <code>frontend/src/index.css</code> via <code>@theme {}</code>.</li>
+
+  <li><strong>CSV export goes through the API client.</strong> The Reports page downloads CSVs through the configured axios <code>api</code> client (<code>responseType: "blob"</code>), not raw <code>fetch</code> with a relative URL — this is necessary because relative URLs hit the Vite dev server and fall through to <code>index.html</code>.</li>
+
+  <li><strong>Two terminals required for dev.</strong> One for the backend, one for the frontend. (Or use a process manager like <code>concurrently</code>; not bundled.)</li>
+</ul>
+
+<h2>8. Troubleshooting</h2>
+
+<table>
+  <thead>
+    <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Vite "Failed to resolve import …" after <code>npm install</code></td>
+      <td>Stale Vite dep cache</td>
+      <td>Stop dev server, <code>rm -rf frontend/node_modules/.vite</code>, <code>npm run dev</code></td>
+    </tr>
+    <tr>
+      <td>"Export CSV" downloads HTML</td>
+      <td>Relative URL fetched the SPA fallback page</td>
+      <td>Already fixed — <code>downloadCsv</code> uses the axios <code>api</code> client</td>
+    </tr>
+    <tr>
+      <td>Backend exits with "Invalid environment configuration"</td>
+      <td>Missing key or JWT secret &lt; 16 chars</td>
+      <td>Compare your <code>.env</code> to <code>.env.example</code></td>
+    </tr>
+    <tr>
+      <td>Mongo / Redis "connection refused"</td>
+      <td>Containers not running</td>
+      <td><code>docker compose ps</code> → <code>docker compose up -d</code></td>
+    </tr>
+    <tr>
+      <td>SPA blank page, console shows React.Children.only</td>
+      <td>Old build of <code>Button.tsx</code> cached</td>
+      <td>Hard reload (<code>Cmd+Shift+R</code>); the <code>Slottable</code> fix is in place</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>Tip.</strong> If you change ports or move the API to a different host, update <code>VITE_API_BASE</code> (frontend) <em>and</em> <code>CORS_ORIGIN</code> (backend) in lockstep. Both must match the actual origins in use.
+</div>
+
+</body>
+</html>
