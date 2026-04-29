@@ -1,0 +1,15 @@
+import { Router } from "express";
+import * as ctrl from "./user.controller";
+import { requireAuth, requireRole } from "../../middleware/auth";
+
+const router = Router();
+
+router.use(requireAuth);
+router.get("/me", ctrl.me);
+router.get("/", requireRole("ADMIN"), ctrl.list);
+router.post("/", requireRole("ADMIN"), ctrl.create);
+router.get("/:id", requireRole("ADMIN"), ctrl.get);
+router.patch("/:id", requireRole("ADMIN"), ctrl.update);
+router.delete("/:id", requireRole("ADMIN"), ctrl.remove);
+
+export default router;
