@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Photovoltaic sales network management — backend",
-  "main": "dist/index.js",
+  "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "build": "echo 'No build step — start runs TypeScript directly via tsx.'",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -26,6 +26,7 @@
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
     "pino-pretty": "^11.3.0",
+    "tsx": "^4.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -35,7 +36,6 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.9.0",
     "mongodb-memory-server": "^10.1.2",
-    "tsx": "^4.19.2",
     "typescript": "5.9.3",
     "vitest": "^2.1.5"
   }
