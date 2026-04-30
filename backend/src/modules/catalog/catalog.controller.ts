@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Types } from "mongoose";
 import * as solutions from "./solution.service";
 import * as bonusRules from "./bonus-rule.service";
+import * as installmentPlans from "./installment-plan.service";
 import { BONUS_CONDITIONS } from "./bonus-rule.model";
 import { USER_ROLES } from "../users/user.model";
 import * as audit from "../audit/audit.service";
@@ -21,10 +22,25 @@ const createVersionSchema = z.object({
   validFrom: z.coerce.date(),
   validTo: z.coerce.date().nullish(),
   basePriceCents: z.number().int().min(0),
+  minPriceCents: z.number().int().min(0).nullish(),
+  maxPriceCents: z.number().int().min(0).nullish(),
   currency: z.string().length(3).optional(),
   agentBp: z.number().int().min(0).max(10_000),
   managerBp: z.number().int().min(0).max(10_000),
   changeReason: z.string().optional(),
+  active: z.boolean().optional(),
+  boundToUserIds: z.array(objectId).optional(),
+  boundToTerritoryIds: z.array(objectId).optional(),
+  boundToCustomerIds: z.array(objectId).optional(),
+});
+
+const updateVersionSchema = z.object({
+  active: z.boolean().optional(),
+  minPriceCents: z.number().int().min(0).nullish(),
+  maxPriceCents: z.number().int().min(0).nullish(),
+  boundToUserIds: z.array(objectId).optional(),
+  boundToTerritoryIds: z.array(objectId).optional(),
+  boundToCustomerIds: z.array(objectId).optional(),
 });
 
 const createBonusRuleSchema = z.object({
@@ -35,7 +51,18 @@ const createBonusRuleSchema = z.object({
   basisPoints: z.number().int().min(0).max(10_000),
   validFrom: z.coerce.date(),
   validTo: z.coerce.date().nullish(),
+  userId: objectId.nullish(),
 });
+
+const createInstallmentPlanSchema = z.object({
+  name: z.string().min(1),
+  months: z.number().int().min(1).max(240),
+  surchargeBp: z.number().int().min(0).max(10_000).optional(),
+  description: z.string().optional(),
+  active: z.boolean().optional(),
+});
+
+const updateInstallmentPlanSchema = createInstallmentPlanSchema.partial();
 
 export const listSolutions: RequestHandler = async (_req, res, next) => {
   try {
@@ -95,6 +122,91 @@ export const createVersion: RequestHandler = async (req, res, next) => {
       requestId: req.requestId,
     });
     res.status(201).json(v);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateVersion: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = updateVersionSchema.parse(req.body);
+    const v = await solutions.updateVersion(req.params.versionId!, body);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "solution.version.update",
+      targetType: "SolutionVersion",
+      targetId: v._id.toString(),
+      after: v.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(v);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const listInstallmentPlans: RequestHandler = async (req, res, next) => {
+  try {
+    const activeOnly = req.query.active === "true";
+    res.json(await installmentPlans.list({ activeOnly }));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createInstallmentPlan: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = createInstallmentPlanSchema.parse(req.body);
+    const p = await installmentPlans.create(body);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "installment-plan.create",
+      targetType: "InstallmentPlan",
+      targetId: p._id.toString(),
+      after: p.toObject(),
+      requestId: req.requestId,
+    });
+    res.status(201).json(p);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateInstallmentPlan: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = updateInstallmentPlanSchema.parse(req.body);
+    const p = await installmentPlans.update(req.params.id!, body);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "installment-plan.update",
+      targetType: "InstallmentPlan",
+      targetId: p._id.toString(),
+      after: p.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(p);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteInstallmentPlan: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const id = req.params.id!;
+    const before = await installmentPlans.softDelete(id);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "installment-plan.delete",
+      targetType: "InstallmentPlan",
+      targetId: id,
+      before: before.toObject(),
+      requestId: req.requestId,
+    });
+    res.status(204).send();
   } catch (err) {
     next(err);
   }

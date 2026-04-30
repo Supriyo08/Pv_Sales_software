@@ -81,6 +81,7 @@ export function Admin() {
     threshold: "10",
     pct: "15",
     validFrom: new Date().toISOString().slice(0, 10),
+    userId: "", // empty = global rule; set = per-user override
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -118,6 +119,7 @@ export function Admin() {
         threshold: parseInt(form.threshold, 10),
         basisPoints: Math.round(parseFloat(form.pct) * 100),
         validFrom: new Date(form.validFrom).toISOString(),
+        userId: form.userId || null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bonus-rules"] });
@@ -383,6 +385,26 @@ export function Admin() {
                   <Input value={form.conditionType} disabled className="font-mono text-xs" />
                 </Field>
               </div>
+              <div className="col-span-2">
+                <Field
+                  label="Apply to (per-user override)"
+                  hint="Leave blank for a global rule that applies to everyone matching the role. Pick a user to override globally for them only."
+                >
+                  <Select
+                    value={form.userId}
+                    onChange={(e) => setForm({ ...form, userId: e.target.value })}
+                  >
+                    <option value="">— Global (all {form.role}s) —</option>
+                    {users
+                      .filter((u) => u.role === form.role)
+                      .map((u) => (
+                        <option key={u._id} value={u._id}>
+                          {u.fullName} ({u.email})
+                        </option>
+                      ))}
+                  </Select>
+                </Field>
+              </div>
               <Field
                 label="Threshold (activations)"
                 hint="Minimum activated installations in the period to qualify"
@@ -441,6 +463,7 @@ export function Admin() {
           <Table>
             <THead>
               <Th>Name</Th>
+              <Th>Scope</Th>
               <Th>Role</Th>
               <Th>Condition</Th>
               <Th className="text-right">Threshold</Th>
@@ -451,9 +474,19 @@ export function Admin() {
               {rules.map((r) => {
                 const validCombo =
                   ROLE_TO_CONDITION[r.role as (typeof ROLES)[number]] === r.conditionType;
+                const overrideUser = r.userId ? userById.get(r.userId) : null;
                 return (
                   <Tr key={r._id}>
                     <Td className="font-medium">{r.name}</Td>
+                    <Td>
+                      {r.userId ? (
+                        <Badge tone="amber">
+                          override · {overrideUser?.fullName ?? r.userId.slice(-8)}
+                        </Badge>
+                      ) : (
+                        <Badge tone="neutral">global</Badge>
+                      )}
+                    </Td>
                     <Td>
                       <Badge tone="brand">{r.role}</Badge>
                     </Td>

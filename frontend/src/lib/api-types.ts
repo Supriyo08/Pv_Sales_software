@@ -18,6 +18,7 @@ export type Customer = {
   email: string;
   phone: string;
   address?: { line1?: string; city?: string; postalCode?: string; country?: string };
+  assignedAgentId: string | null;
   createdAt: string;
 };
 
@@ -34,10 +35,16 @@ export type SolutionVersion = {
   validFrom: string;
   validTo: string | null;
   basePriceCents: number;
+  minPriceCents: number | null;
+  maxPriceCents: number | null;
   currency: string;
   agentBp: number;
   managerBp: number;
   changeReason: string;
+  active: boolean;
+  boundToUserIds: string[];
+  boundToTerritoryIds: string[];
+  boundToCustomerIds: string[];
   createdAt: string;
 };
 
@@ -50,7 +57,13 @@ export type BonusRule = {
   basisPoints: number;
   validFrom: string;
   validTo: string | null;
+  userId: string | null;
 };
+
+export type ContractPaymentMethod =
+  | "ONE_TIME"
+  | "ADVANCE_INSTALLMENTS"
+  | "FULL_INSTALLMENTS";
 
 export type Contract = {
   _id: string;
@@ -64,7 +77,111 @@ export type Contract = {
   signedAt: string | null;
   cancelledAt: string | null;
   cancellationReason: string;
+  paymentMethod: ContractPaymentMethod;
+  advanceCents: number;
+  installmentPlanId: string | null;
+  installmentMonths: number | null;
+  installmentAmountCents: number | null;
+  approvalRequired: boolean;
+  signedScanDocumentId: string | null;
+  approvedAt: string | null;
+  approvedBy: string | null;
   createdAt: string;
+};
+
+export type CustomerFieldType =
+  | "text"
+  | "email"
+  | "tel"
+  | "date"
+  | "number"
+  | "select"
+  | "textarea";
+
+export type CustomerFormField = {
+  key: string;
+  label: string;
+  type: CustomerFieldType;
+  required: boolean;
+  placeholder?: string;
+  helpText?: string;
+  options?: string[];
+  builtin?: boolean;
+  order?: number;
+};
+
+export type CustomerFormConfig = {
+  _id: string;
+  fields: CustomerFormField[];
+  updatedAt: string;
+};
+
+export type DocumentRecord = {
+  _id: string;
+  ownerType: string;
+  ownerId: string;
+  kind: string;
+  url: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedBy: string;
+  createdAt: string;
+};
+
+export type InstallmentPlan = {
+  _id: string;
+  name: string;
+  months: number;
+  surchargeBp: number;
+  description: string;
+  active: boolean;
+  createdAt: string;
+};
+
+export type PriceApprovalRequest = {
+  _id: string;
+  customerId: string;
+  agentId: string;
+  solutionVersionId: string;
+  requestedAmountCents: number;
+  minPriceCents: number | null;
+  maxPriceCents: number | null;
+  note: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string;
+  contractId: string | null;
+  createdAt: string;
+};
+
+export type PricingStepRule = {
+  variable: "panels" | "battery";
+  thresholdKwh: number;
+  addCents: number;
+  label?: string;
+};
+
+export type PricingFormula = {
+  _id: string;
+  name: string;
+  description: string;
+  panelsBasePerKwhCents: number;
+  batteryBasePerKwhCents: number;
+  stepRules: PricingStepRule[];
+  currency: string;
+  active: boolean;
+  createdAt: string;
+};
+
+export type QuoteResult = {
+  panelsKwh: number;
+  batteryKwh: number;
+  panelsBaseCents: number;
+  batteryBaseCents: number;
+  steps: { label: string; addCents: number; matchedRule: PricingStepRule }[];
+  totalCents: number;
+  currency: string;
 };
 
 export type Installation = {

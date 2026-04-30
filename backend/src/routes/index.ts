@@ -15,6 +15,8 @@ import reportRoutes from "../modules/reports/report.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
 import auditRoutes from "../modules/audit/audit.routes";
 import templateRoutes from "../modules/templates/template.routes";
+import priceApprovalRoutes from "../modules/price-approvals/price-approval.routes";
+import pricingFormulaRoutes from "../modules/custom-pricing/pricing.routes";
 
 const router = Router();
 
@@ -34,5 +36,7 @@ router.use("/reports", reportRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/audit-logs", auditRoutes);
 router.use("/templates", templateRoutes);
+router.use("/price-approvals", priceApprovalRoutes);
+router.use("/pricing-formulas", pricingFormulaRoutes);
 
 export default router;

@@ -9,6 +9,7 @@ router.get("/me", ctrl.me);
 router.get("/", requireRole("ADMIN"), ctrl.list);
 router.post("/", requireRole("ADMIN"), ctrl.create);
 router.get("/:id", requireRole("ADMIN"), ctrl.get);
+router.get("/:id/profile", requireRole("ADMIN", "AREA_MANAGER"), ctrl.profile);
 router.patch("/:id", requireRole("ADMIN"), ctrl.update);
 router.delete("/:id", requireRole("ADMIN"), ctrl.remove);
 

@@ -65,9 +65,15 @@ export async function generateForContract(
   const created: CommissionHydrated[] = [];
   const period = derivePeriod(contract.signedAt ?? contract.createdAt);
 
+  // Per Review 1.0 §6: standard commission is paid on contract signature, *adjusted by
+  // payment method*. The "effective base" reduces the contract amount when the payment is
+  // financed (FULL_INSTALLMENTS), reflecting deferred-payment risk. ONE_TIME and
+  // ADVANCE_INSTALLMENTS take the full amount.
+  const effectiveBaseCents = await effectiveBaseForCommission(contract);
+
   let agentCommissionCents = 0;
   if (contract.agentId && version.agentBp > 0) {
-    agentCommissionCents = calcCommissionCents(contract.amountCents, version.agentBp);
+    agentCommissionCents = calcCommissionCents(effectiveBaseCents, version.agentBp);
     const c = await Commission.create({
       contractId,
       beneficiaryUserId: contract.agentId,
@@ -80,7 +86,9 @@ export async function generateForContract(
       metadata: {
         solutionVersionId: versionId,
         bp: version.agentBp,
-        baseCents: contract.amountCents,
+        baseCents: effectiveBaseCents,
+        contractAmountCents: contract.amountCents,
+        paymentMethod: contract.paymentMethod,
         baseKind: "CONTRACT_AMOUNT",
       },
     });
@@ -124,6 +132,32 @@ function derivePeriod(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
+}
+
+/**
+ * Effective base for commission, adjusted by payment method.
+ * - ONE_TIME, ADVANCE_INSTALLMENTS → full contract amount
+ * - FULL_INSTALLMENTS → contract amount minus the InstallmentPlan's surchargeBp,
+ *   modelling the cost of fully-deferred payment.
+ *
+ * Returns the original amount if anything required to compute the surcharge is missing
+ * (defensive — never blows away commission on a bad lookup).
+ */
+export async function effectiveBaseForCommission(contract: {
+  amountCents: number;
+  paymentMethod?: string;
+  installmentPlanId?: unknown;
+}): Promise<number> {
+  if (contract.paymentMethod !== "FULL_INSTALLMENTS") return contract.amountCents;
+  if (!contract.installmentPlanId) return contract.amountCents;
+  const { InstallmentPlan } = await import("../catalog/installment-plan.model");
+  const plan = await InstallmentPlan.findById(
+    contract.installmentPlanId as Types.ObjectId
+  ).lean();
+  if (!plan) return contract.amountCents;
+  // Subtract surcharge: e.g. surchargeBp=500 (5%) → base * 0.95
+  const reduction = Math.round((contract.amountCents * plan.surchargeBp) / 10_000);
+  return Math.max(0, contract.amountCents - reduction);
 }
 
 export async function recalculateContractsForSolution(

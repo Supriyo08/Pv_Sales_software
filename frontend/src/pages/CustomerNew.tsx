@@ -1,41 +1,57 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { Field, Input } from "../components/ui/Input";
+import { Field, Input, Select, Textarea } from "../components/ui/Input";
+import type { CustomerFormConfig, CustomerFormField } from "../lib/api-types";
+
+const BUILTIN_KEYS = new Set(["fiscalCode", "fullName", "email", "phone"]);
 
 export function CustomerNew() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({
-    fiscalCode: "",
-    fullName: "",
-    email: "",
-    phone: "",
-    addressLine1: "",
-    city: "",
-    postalCode: "",
+  const { data: schema } = useQuery<CustomerFormConfig>({
+    queryKey: ["customer-form"],
+    queryFn: async () => (await api.get("/customer-form")).data,
   });
+
+  const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Initialise blank values for every field once the schema arrives.
+  useEffect(() => {
+    if (!schema) return;
+    setValues((cur) => {
+      const next = { ...cur };
+      for (const f of schema.fields) {
+        if (next[f.key] === undefined) next[f.key] = "";
+      }
+      return next;
+    });
+  }, [schema]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSaving(true);
     try {
-      const { data } = await api.post("/customers", {
-        fiscalCode: form.fiscalCode,
-        fullName: form.fullName,
-        email: form.email || undefined,
-        phone: form.phone || undefined,
-        address: {
-          line1: form.addressLine1,
-          city: form.city,
-          postalCode: form.postalCode,
-        },
-      });
+      // Split builtins (top-level fields on Customer) vs custom (go into customFields).
+      const body: Record<string, unknown> = {};
+      const customFields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (v === "") continue;
+        if (BUILTIN_KEYS.has(k)) {
+          body[k] = v;
+        } else {
+          customFields[k] = v;
+        }
+      }
+      if (Object.keys(customFields).length > 0) body.customFields = customFields;
+
+      const { data } = await api.post("/customers", body);
       navigate(`/customers/${data._id}`);
     } catch (err: unknown) {
       setError(
@@ -47,39 +63,30 @@ export function CustomerNew() {
     }
   };
 
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm({ ...form, [k]: e.target.value });
+  if (!schema) return <p className="text-slate-500">Loading…</p>;
+
+  // Sort fields by `order` for stable display.
+  const sorted = [...schema.fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
   return (
     <div>
       <BackLink to="/customers">Back to customers</BackLink>
-      <PageHeader title="New customer" description="Add a customer record. Fiscal code must be unique." />
+      <PageHeader
+        title="New customer"
+        description="Form fields are configurable by an admin. Fiscal code must be unique."
+      />
       <Card className="max-w-xl">
         <form onSubmit={submit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Fiscal code" required>
-              <Input value={form.fiscalCode} onChange={set("fiscalCode")} required />
-            </Field>
-            <Field label="Full name" required>
-              <Input value={form.fullName} onChange={set("fullName")} required />
-            </Field>
-            <Field label="Email">
-              <Input type="email" value={form.email} onChange={set("email")} />
-            </Field>
-            <Field label="Phone">
-              <Input value={form.phone} onChange={set("phone")} />
-            </Field>
-            <div className="col-span-2">
-              <Field label="Address line 1">
-                <Input value={form.addressLine1} onChange={set("addressLine1")} />
-              </Field>
-            </div>
-            <Field label="City">
-              <Input value={form.city} onChange={set("city")} />
-            </Field>
-            <Field label="Postal code">
-              <Input value={form.postalCode} onChange={set("postalCode")} />
-            </Field>
+            {sorted.map((f) => (
+              <div key={f.key} className={spanFor(f)}>
+                <DynamicField
+                  field={f}
+                  value={values[f.key] ?? ""}
+                  onChange={(v) => setValues({ ...values, [f.key]: v })}
+                />
+              </div>
+            ))}
           </div>
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -97,5 +104,72 @@ export function CustomerNew() {
         </form>
       </Card>
     </div>
+  );
+}
+
+function spanFor(f: CustomerFormField): string {
+  // Textareas + select with many options span the full row for readability.
+  if (f.type === "textarea") return "col-span-2";
+  return "";
+}
+
+function DynamicField({
+  field,
+  value,
+  onChange,
+}: {
+  field: CustomerFormField;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const common = {
+    label: field.label,
+    required: field.required,
+    hint: field.helpText,
+  };
+
+  if (field.type === "select") {
+    return (
+      <Field {...common}>
+        <Select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required={field.required}
+        >
+          <option value="">— Select —</option>
+          {(field.options ?? []).map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    );
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <Field {...common}>
+        <Textarea
+          value={value}
+          onChange={(e) => onChange((e.target as HTMLTextAreaElement).value)}
+          required={field.required}
+          placeholder={field.placeholder}
+          rows={4}
+        />
+      </Field>
+    );
+  }
+
+  return (
+    <Field {...common}>
+      <Input
+        type={field.type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        placeholder={field.placeholder}
+      />
+    </Field>
   );
 }

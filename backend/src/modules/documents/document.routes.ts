@@ -7,5 +7,6 @@ router.use(requireAuth);
 
 router.get("/", ctrl.listForOwner);
 router.post("/", ctrl.create);
+router.post("/upload", ctrl.uploadMiddleware, ctrl.upload);
 
 export default router;

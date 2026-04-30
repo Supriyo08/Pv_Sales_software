@@ -5,6 +5,7 @@ import * as leadService from "./lead.service";
 import { LEAD_STATUSES } from "./lead.model";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
+import { buildScope } from "../../lib/scope";
 
 const objectId = z
   .string()
@@ -22,9 +23,10 @@ const transitionSchema = z.object({ status: z.enum(LEAD_STATUSES) });
 
 export const list: RequestHandler = async (req, res, next) => {
   try {
+    const scope = await buildScope(req.user);
     const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
     const status = typeof req.query.status === "string" ? (req.query.status as never) : undefined;
-    res.json(await leadService.list({ agentId, status }));
+    res.json(await leadService.list({ agentId, status }, scope));
   } catch (err) {
     next(err);
   }
@@ -32,7 +34,8 @@ export const list: RequestHandler = async (req, res, next) => {
 
 export const get: RequestHandler = async (req, res, next) => {
   try {
-    res.json(await leadService.getById(req.params.id!));
+    const scope = await buildScope(req.user);
+    res.json(await leadService.getById(req.params.id!, scope));
   } catch (err) {
     next(err);
   }
@@ -64,7 +67,7 @@ export const transition: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
     const body = transitionSchema.parse(req.body);
-    const before = (await leadService.getById(req.params.id!)).toObject();
+    const before = (await leadService.getById(req.params.id!, await buildScope(req.user))).toObject();
     const lead = await leadService.transition(req.params.id!, body.status);
     void audit.log({
       actorId: req.user.sub,

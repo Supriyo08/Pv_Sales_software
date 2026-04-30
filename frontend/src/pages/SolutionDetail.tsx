@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Plus, Power } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
 import { Card } from "../components/ui/Card";
@@ -20,6 +20,8 @@ export function SolutionDetail() {
   const [showForm, setShowForm] = useState(false);
   const [validFrom, setValidFrom] = useState("");
   const [basePrice, setBasePrice] = useState("");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
   const [agentPct, setAgentPct] = useState("15");
   const [managerPct, setManagerPct] = useState("5");
   const [reason, setReason] = useState("");
@@ -43,6 +45,8 @@ export function SolutionDetail() {
       api.post(`/catalog/solutions/${id}/versions`, {
         validFrom: new Date(validFrom).toISOString(),
         basePriceCents: Math.round(parseFloat(basePrice) * 100),
+        minPriceCents: minPrice ? Math.round(parseFloat(minPrice) * 100) : null,
+        maxPriceCents: maxPrice ? Math.round(parseFloat(maxPrice) * 100) : null,
         agentBp: Math.round(parseFloat(agentPct) * 100),
         managerBp: Math.round(parseFloat(managerPct) * 100),
         changeReason: reason,
@@ -52,11 +56,20 @@ export function SolutionDetail() {
       setShowForm(false);
       setValidFrom("");
       setBasePrice("");
+      setMinPrice("");
+      setMaxPrice("");
       setReason("");
       setError(null);
     },
     onError: (err: { response?: { data?: { error?: string } } }) =>
       setError(err?.response?.data?.error ?? "Failed"),
+  });
+
+  const toggleActive = useMutation({
+    mutationFn: async (v: SolutionVersion) =>
+      api.patch(`/catalog/solutions/${id}/versions/${v._id}`, { active: !v.active }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["solution-versions", id] }),
   });
 
   return (
@@ -97,6 +110,24 @@ export function SolutionDetail() {
                 value={basePrice}
                 onChange={(e) => setBasePrice(e.target.value)}
                 required
+              />
+            </Field>
+            <Field label="Min price (EUR)" hint="Agents below this need approval. Blank = no minimum.">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={minPrice}
+                onChange={(e) => setMinPrice(e.target.value)}
+              />
+            </Field>
+            <Field label="Max price (EUR)" hint="Agents above this need approval. Blank = no maximum.">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={maxPrice}
+                onChange={(e) => setMaxPrice(e.target.value)}
               />
             </Field>
             <Field label="Agent commission %" hint="Applied to the contract amount">
@@ -150,14 +181,17 @@ export function SolutionDetail() {
             <Th>Valid from</Th>
             <Th>Valid to</Th>
             <Th>Base price</Th>
+            <Th>Range</Th>
             <Th title="% of contract amount">Agent %</Th>
             <Th title="% of agent commission (additive)">Mgr override %</Th>
+            <Th>Status</Th>
             <Th>Reason</Th>
+            {role === "ADMIN" && <Th></Th>}
           </THead>
           <TBody>
             {versions.length === 0 && (
               <Tr>
-                <Td colSpan={6}>
+                <Td colSpan={role === "ADMIN" ? 9 : 8}>
                   <span className="text-slate-500">No versions yet.</span>
                 </Td>
               </Tr>
@@ -166,14 +200,42 @@ export function SolutionDetail() {
               <Tr key={v._id}>
                 <Td>{formatDate(v.validFrom)}</Td>
                 <Td>
-                  {v.validTo ? formatDate(v.validTo) : <Badge tone="green">Active</Badge>}
+                  {v.validTo ? formatDate(v.validTo) : <Badge tone="green">Open</Badge>}
                 </Td>
                 <Td className="font-medium">{formatCents(v.basePriceCents, v.currency)}</Td>
+                <Td className="text-xs text-slate-600">
+                  {v.minPriceCents !== null ? formatCents(v.minPriceCents) : "—"} →{" "}
+                  {v.maxPriceCents !== null ? formatCents(v.maxPriceCents) : "—"}
+                </Td>
                 <Td>{formatBp(v.agentBp)}</Td>
                 <Td>{formatBp(v.managerBp)}</Td>
+                <Td>
+                  {v.active ? (
+                    <Badge tone="green">Active</Badge>
+                  ) : (
+                    <Badge tone="neutral">Inactive</Badge>
+                  )}
+                  {(v.boundToUserIds?.length || v.boundToTerritoryIds?.length || v.boundToCustomerIds?.length) ? (
+                    <div className="mt-1">
+                      <Badge tone="amber">bound</Badge>
+                    </div>
+                  ) : null}
+                </Td>
                 <Td className="text-slate-500">
                   {v.changeReason || <span className="text-slate-400">—</span>}
                 </Td>
+                {role === "ADMIN" && (
+                  <Td>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => toggleActive.mutate(v)}
+                      icon={<Power className="size-3.5" />}
+                    >
+                      {v.active ? "Deactivate" : "Activate"}
+                    </Button>
+                  </Td>
+                )}
               </Tr>
             ))}
           </TBody>

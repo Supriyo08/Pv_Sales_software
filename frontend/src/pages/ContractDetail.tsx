@@ -1,12 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, XCircle, RefreshCw, ArrowRight } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  RefreshCw,
+  ArrowRight,
+  Upload,
+  ShieldCheck,
+} from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { StatusBadge } from "../components/ui/Badge";
+import { Badge, StatusBadge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { formatCents, formatDate, formatDateTime } from "../lib/format";
 import { useRole } from "../store/auth";
@@ -15,6 +22,7 @@ import type {
   Customer,
   Installation,
   Commission,
+  DocumentRecord,
   User,
 } from "../lib/api-types";
 
@@ -89,10 +97,59 @@ export function ContractDetail() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["commissions"] }),
   });
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const uploadScan = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("ownerType", "Contract");
+      fd.append("ownerId", id!);
+      fd.append("kind", "CONTRACT_PDF");
+      const { data } = await api.post<DocumentRecord>("/documents/upload", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return api.post(`/contracts/${id}/upload-signed`, { documentId: data._id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries();
+      setUploadError(null);
+    },
+    onError: (err: { response?: { data?: { error?: string } } }) =>
+      setUploadError(err?.response?.data?.error ?? "Upload failed"),
+  });
+
+  const approve = useMutation({
+    mutationFn: async () => api.post(`/contracts/${id}/approve`),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+
+  const { data: scanDocs = [] } = useQuery<DocumentRecord[]>({
+    queryKey: ["contract-docs", id],
+    queryFn: async () =>
+      (
+        await api.get("/documents", {
+          params: { ownerType: "Contract", ownerId: id },
+        })
+      ).data,
+    enabled: !!id,
+  });
+
   if (!contract) return <p className="text-slate-500">Loading…</p>;
 
-  const canSign = contract.status === "DRAFT" && (role === "ADMIN" || role === "AREA_MANAGER");
+  const canSign = contract.status === "DRAFT";
   const canCancel = contract.status !== "CANCELLED" && (role === "ADMIN" || role === "AREA_MANAGER");
+  const canUpload =
+    contract.status === "SIGNED" &&
+    contract.approvalRequired &&
+    !contract.approvedAt;
+  const canApprove =
+    contract.status === "SIGNED" &&
+    contract.approvalRequired &&
+    !contract.approvedAt &&
+    !!contract.signedScanDocumentId &&
+    (role === "ADMIN" || role === "AREA_MANAGER");
   const nextInstallStatus = installation ? NEXT_INSTALL_STEPS[installation.status] : null;
 
   return (
@@ -106,6 +163,15 @@ export function ContractDetail() {
               {contract._id.slice(-8)}
             </code>
             <StatusBadge status={contract.status} />
+            {contract.approvalRequired && contract.status === "SIGNED" && (
+              contract.approvedAt ? (
+                <Badge tone="green">approved</Badge>
+              ) : contract.signedScanDocumentId ? (
+                <Badge tone="amber">awaiting approval</Badge>
+              ) : (
+                <Badge tone="amber">awaiting signed scan</Badge>
+              )
+            )}
           </span>
         }
         action={
@@ -117,6 +183,15 @@ export function ContractDetail() {
                 icon={<CheckCircle2 className="size-4" />}
               >
                 Sign contract
+              </Button>
+            )}
+            {canApprove && (
+              <Button
+                onClick={() => approve.mutate()}
+                loading={approve.isPending}
+                icon={<ShieldCheck className="size-4" />}
+              >
+                Approve & generate commissions
               </Button>
             )}
             {canCancel && (
@@ -133,6 +208,57 @@ export function ContractDetail() {
         }
       />
 
+      {canUpload && (
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <Upload className="size-5 text-amber-700 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-semibold text-amber-900 mb-1">
+                {contract.signedScanDocumentId
+                  ? "Signed scan attached — replace if needed"
+                  : "Customer-signed scan required"}
+              </div>
+              <p className="text-sm text-amber-800 mb-3">
+                Upload the customer-signed contract scan. An admin or area manager will then
+                verify signatures and approve. Commissions are generated only on approval.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/pdf,image/*"
+                  className="text-sm"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) uploadScan.mutate(file);
+                  }}
+                />
+                {uploadScan.isPending && <span className="text-sm text-amber-700">Uploading…</span>}
+              </div>
+              {uploadError && (
+                <div className="mt-2 text-sm text-red-700">{uploadError}</div>
+              )}
+              {scanDocs.length > 0 && (
+                <div className="mt-3 text-xs text-amber-800">
+                  Uploaded scans:{" "}
+                  {scanDocs.map((d) => (
+                    <a
+                      key={d._id}
+                      href={`http://localhost:4000${d.url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline mr-2"
+                    >
+                      {d._id.slice(-8)}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <h3 className="font-semibold mb-4">Details</h3>
@@ -146,6 +272,15 @@ export function ContractDetail() {
             <Row k="Agent">{agent?.fullName ?? <code className="font-mono text-xs">{contract.agentId.slice(-8)}</code>}</Row>
             <Row k="Created">{formatDateTime(contract.createdAt)}</Row>
             <Row k="Signed">{formatDateTime(contract.signedAt)}</Row>
+            <Row k="Approved">
+              {contract.approvedAt ? (
+                formatDateTime(contract.approvedAt)
+              ) : contract.approvalRequired ? (
+                <span className="text-amber-700">pending</span>
+              ) : (
+                <span className="text-slate-400">not required</span>
+              )}
+            </Row>
             <Row k="Cancelled">{formatDateTime(contract.cancelledAt)}</Row>
             {contract.cancellationReason && (
               <Row k="Cancel reason">{contract.cancellationReason}</Row>

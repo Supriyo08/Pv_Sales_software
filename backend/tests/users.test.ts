@@ -27,15 +27,15 @@ describe("user.service hierarchy validation", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  it("rejects AGENT without manager", async () => {
-    await expect(
-      userService.adminCreate({
-        email: "x@x.com",
-        password: "password",
-        fullName: "X",
-        role: "AGENT",
-      })
-    ).rejects.toMatchObject({ status: 400, message: /must have a manager/ });
+  it("ALLOWS AGENT without a manager (Review 1.0 §2)", async () => {
+    const agent = await userService.adminCreate({
+      email: "lone@x.com",
+      password: "password",
+      fullName: "Lone Agent",
+      role: "AGENT",
+    });
+    expect(agent?.role).toBe("AGENT");
+    expect(agent?.managerId).toBeNull();
   });
 
   it("rejects AGENT under another AGENT", async () => {

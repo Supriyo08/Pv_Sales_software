@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -6,6 +7,8 @@ import {
   Coins,
   TrendingUp,
   ArrowRight,
+  AlertTriangle,
+  CheckCircle2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { Card } from "../components/ui/Card";
@@ -15,7 +18,15 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { formatCents, formatDate, currentPeriod } from "../lib/format";
 import { useAuth, useRole, decodeUserId } from "../store/auth";
 import { cn } from "../lib/cn";
-import type { User, Contract, Customer, Notification } from "../lib/api-types";
+import type {
+  User,
+  Contract,
+  Customer,
+  Notification,
+  Solution,
+  SolutionVersion,
+  Payment,
+} from "../lib/api-types";
 
 type Funnel = Record<string, { count: number; totalCents: number }>;
 
@@ -45,9 +56,28 @@ export function Dashboard() {
     enabled: role === "ADMIN" || role === "AREA_MANAGER",
   });
 
+  const { data: users = [] } = useQuery<User[]>({
+    queryKey: ["users"],
+    queryFn: async () => (await api.get("/users")).data,
+    enabled: role === "ADMIN" || role === "AREA_MANAGER",
+  });
+  const userById = new Map(users.map((u) => [u._id, u]));
+
+  const { data: solutions = [] } = useQuery<Solution[]>({
+    queryKey: ["solutions"],
+    queryFn: async () => (await api.get("/catalog/solutions")).data,
+  });
+  const solutionById = new Map(solutions.map((s) => [s._id, s]));
+
   const { data: notifications = [] } = useQuery<Notification[]>({
     queryKey: ["notifications", "list"],
     queryFn: async () => (await api.get("/notifications")).data,
+  });
+
+  // Per Review 1.0 §6: dashboard tracks overdue + paid.
+  const { data: payments = [] } = useQuery<Payment[]>({
+    queryKey: ["payments"],
+    queryFn: async () => (await api.get("/payments")).data,
   });
 
   const myContracts = contracts.filter((c) => (role === "AGENT" ? c.agentId === userId : true));
@@ -56,6 +86,20 @@ export function Dashboard() {
     .reduce((acc, c) => acc + c.amountCents, 0);
   const signedCount = myContracts.filter((c) => c.status === "SIGNED").length;
   const draftCount = myContracts.filter((c) => c.status === "DRAFT").length;
+
+  const myPayments =
+    role === "AGENT" ? payments.filter((p) => p.userId === userId) : payments;
+  const period = currentPeriod();
+  const overdue = myPayments.filter(
+    (p) => (p.status === "PENDING" || p.status === "PARTIAL") && p.period < period
+  );
+  const overdueAmount = overdue.reduce(
+    (acc, p) => acc + (p.totalAmountCents - p.paidCents),
+    0
+  );
+  const paidThisPeriod = myPayments
+    .filter((p) => p.period === period && p.paidCents > 0)
+    .reduce((acc, p) => acc + p.paidCents, 0);
 
   return (
     <div className="space-y-6">
@@ -87,6 +131,33 @@ export function Dashboard() {
         <StatTile icon={Coins} label="Drafts" value={draftCount} link="/contracts" tone="amber" />
       </div>
 
+      {(role === "ADMIN" || role === "AREA_MANAGER" || overdue.length > 0) && (
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+          <StatTile
+            icon={AlertTriangle}
+            label="Overdue payments"
+            value={overdue.length}
+            sub={overdue.length > 0 ? `${formatCents(overdueAmount)} unpaid` : "all clear"}
+            link={role === "ADMIN" ? "/admin/payments" : undefined}
+            tone={overdue.length > 0 ? "amber" : "green"}
+          />
+          <StatTile
+            icon={CheckCircle2}
+            label={`Paid this period (${period})`}
+            value={formatCents(paidThisPeriod)}
+            tone="green"
+          />
+          <StatTile
+            icon={Coins}
+            label="Pending payments"
+            value={
+              myPayments.filter((p) => p.status === "PENDING" || p.status === "PARTIAL").length
+            }
+            tone="blue"
+          />
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-3">
         <Card padding={false} className="lg:col-span-2 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -107,27 +178,12 @@ export function Dashboard() {
               }
             />
           ) : (
-            <ul className="divide-y divide-slate-100">
-              {myContracts.slice(0, 6).map((c) => (
-                <li key={c._id}>
-                  <Link
-                    to={`/contracts/${c._id}`}
-                    className="flex items-center gap-4 px-6 py-3 hover:bg-slate-50 transition"
-                  >
-                    <div className="flex-1">
-                      <div className="font-mono text-xs text-slate-500">{c._id.slice(-8)}</div>
-                      <div className="text-sm font-medium text-slate-900 mt-0.5">
-                        {formatCents(c.amountCents, c.currency)}
-                      </div>
-                    </div>
-                    <StatusBadge status={c.status} />
-                    <div className="text-xs text-slate-500 w-24 text-right">
-                      {formatDate(c.signedAt ?? c.createdAt)}
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <RecentContractsTable
+              contracts={myContracts.slice(0, 8)}
+              userById={userById}
+              solutionById={solutionById}
+              showAgentColumn={role === "ADMIN" || role === "AREA_MANAGER"}
+            />
           )}
         </Card>
 
@@ -171,6 +227,118 @@ export function Dashboard() {
           )}
         </Card>
       </div>
+    </div>
+  );
+}
+
+function RecentContractsTable({
+  contracts,
+  userById,
+  solutionById,
+  showAgentColumn,
+}: {
+  contracts: Contract[];
+  userById: Map<string, User>;
+  solutionById: Map<string, Solution>;
+  showAgentColumn: boolean;
+}) {
+  // Fetch versions for any solution referenced by a contract — small N on the dashboard.
+  const distinctSolutionIds = useMemo(
+    () => Array.from(new Set(solutionById.keys())),
+    [solutionById]
+  );
+  const { data: versionLookup } = useQuery<Map<string, string>>({
+    queryKey: ["solution-versions-lookup", distinctSolutionIds.join(",")],
+    queryFn: async () => {
+      const map = new Map<string, string>();
+      await Promise.all(
+        distinctSolutionIds.map(async (sid) => {
+          const versions = (
+            await api.get<SolutionVersion[]>(`/catalog/solutions/${sid}/versions`)
+          ).data;
+          for (const v of versions) map.set(v._id, sid);
+        })
+      );
+      return map;
+    },
+    enabled: distinctSolutionIds.length > 0,
+  });
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Contract
+            </th>
+            {showAgentColumn && (
+              <>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Agent
+                </th>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Area Manager
+                </th>
+              </>
+            )}
+            <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Solution
+            </th>
+            <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Amount
+            </th>
+            <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Status
+            </th>
+            <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Date
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 bg-white">
+          {contracts.map((c) => {
+            const agent = c.agentId ? userById.get(c.agentId) : undefined;
+            const manager = c.managerId ? userById.get(c.managerId) : undefined;
+            const solutionId = versionLookup?.get(c.solutionVersionId);
+            const solution = solutionId ? solutionById.get(solutionId) : undefined;
+            return (
+              <tr key={c._id} className="hover:bg-slate-50 transition">
+                <td className="px-4 py-2">
+                  <Link
+                    to={`/contracts/${c._id}`}
+                    className="font-mono text-xs text-brand-600 hover:text-brand-700"
+                  >
+                    {c._id.slice(-8)}
+                  </Link>
+                </td>
+                {showAgentColumn && (
+                  <>
+                    <td className="px-4 py-2 text-slate-700">
+                      {agent?.fullName ?? <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-slate-700">
+                      {manager?.fullName ?? <span className="text-slate-400">—</span>}
+                    </td>
+                  </>
+                )}
+                <td className="px-4 py-2 text-slate-700">
+                  {solution?.name ?? <span className="text-slate-400">—</span>}
+                </td>
+                <td className="px-4 py-2 text-right font-medium text-slate-900">
+                  {formatCents(c.amountCents, c.currency)}
+                </td>
+                <td className="px-4 py-2">
+                  <StatusBadge status={c.status} />
+                </td>
+                <td className="px-4 py-2 text-right text-xs text-slate-500">
+                  {formatDate(c.signedAt ?? c.createdAt)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -51,6 +51,14 @@ export const get: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const profile: RequestHandler = async (req, res, next) => {
+  try {
+    res.json(await userService.getProfile(req.params.id!));
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const create: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");

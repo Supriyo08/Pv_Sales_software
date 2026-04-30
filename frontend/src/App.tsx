@@ -16,11 +16,17 @@ import { SolutionDetail } from "./pages/SolutionDetail";
 import { Reports } from "./pages/Reports";
 import { Admin } from "./pages/Admin";
 import { UsersAdmin } from "./pages/UsersAdmin";
+import { UserProfile } from "./pages/UserProfile";
 import { TerritoriesAdmin } from "./pages/TerritoriesAdmin";
 import { Payments } from "./pages/Payments";
 import { AuditLogs } from "./pages/AuditLogs";
 import { TemplatesAdmin } from "./pages/TemplatesAdmin";
 import { TemplateRender } from "./pages/TemplateRender";
+import { InstallmentPlansAdmin } from "./pages/InstallmentPlansAdmin";
+import { PriceApprovalsAdmin } from "./pages/PriceApprovalsAdmin";
+import { PricingFormulasAdmin } from "./pages/PricingFormulasAdmin";
+import { Quote } from "./pages/Quote";
+import { CustomerFormAdmin } from "./pages/CustomerFormAdmin";
 import { NotificationsPage } from "./pages/Notifications";
 import { RequireAuth } from "./components/RequireAuth";
 import { AppLayout } from "./components/AppLayout";
@@ -52,11 +58,20 @@ export default function App() {
               <Route path="/solutions/:id" element={<SolutionDetail />} />
               <Route path="/templates" element={<TemplatesAdmin />} />
               <Route path="/templates/:id/render" element={<TemplateRender />} />
+              <Route path="/quote" element={<Quote />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/payments" element={<Payments />} />
               <Route path="/admin/users" element={<UsersAdmin />} />
+              <Route path="/admin/users/:id" element={<UserProfile />} />
               <Route path="/admin/territories" element={<TerritoriesAdmin />} />
+              <Route
+                path="/admin/installment-plans"
+                element={<InstallmentPlansAdmin />}
+              />
+              <Route path="/admin/price-approvals" element={<PriceApprovalsAdmin />} />
+              <Route path="/admin/pricing-formulas" element={<PricingFormulasAdmin />} />
+              <Route path="/admin/customer-form" element={<CustomerFormAdmin />} />
               <Route path="/admin/audit-logs" element={<AuditLogs />} />
               <Route path="/notifications" element={<NotificationsPage />} />
             </Route>

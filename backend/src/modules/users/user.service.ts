@@ -1,6 +1,11 @@
 import bcrypt from "bcrypt";
+import { Types } from "mongoose";
 import { User, type UserRole } from "./user.model";
 import { Territory } from "../territories/territory.model";
+import { Contract } from "../contracts/contract.model";
+import { Commission } from "../commissions/commission.model";
+import { Payment } from "../payments/payment.model";
+import { Bonus } from "../bonuses/bonus.model";
 import { HttpError } from "../../middleware/error";
 import { ensureNoCycle } from "../../utils/hierarchy";
 
@@ -12,6 +17,87 @@ export async function getById(id: string) {
 
 export async function list() {
   return User.find({ deletedAt: null }).select("-passwordHash").sort({ createdAt: -1 });
+}
+
+/**
+ * Aggregated profile for a user — used to render the per-user "performance + payments" view.
+ * Per Review 1.0 §2: each user profile should include a report covering their specific
+ * payments and performance.
+ */
+export async function getProfile(id: string) {
+  const user = await getById(id);
+  const userId = new Types.ObjectId(id);
+
+  const [
+    contractsByStatus,
+    activeCommissions,
+    bonusesByPeriod,
+    paymentsByStatus,
+  ] = await Promise.all([
+    Contract.aggregate<{ _id: string; count: number; totalCents: number }>([
+      { $match: { agentId: userId } },
+      { $group: { _id: "$status", count: { $sum: 1 }, totalCents: { $sum: "$amountCents" } } },
+    ]),
+    Commission.aggregate<{ _id: string; total: number; count: number }>([
+      {
+        $match: {
+          beneficiaryUserId: userId,
+          supersededAt: null,
+        },
+      },
+      {
+        $group: {
+          _id: "$sourceEvent",
+          total: { $sum: "$amountCents" },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+    Bonus.aggregate<{ _id: string; bonusCents: number; baseCents: number; count: number }>([
+      { $match: { userId } },
+      {
+        $group: {
+          _id: "$period",
+          bonusCents: { $sum: "$bonusAmountCents" },
+          baseCents: { $sum: "$baseAmountCents" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 24 },
+    ]),
+    Payment.aggregate<{ _id: string; count: number; totalCents: number; paidCents: number }>([
+      { $match: { userId } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalCents: { $sum: "$totalAmountCents" },
+          paidCents: { $sum: "$paidCents" },
+        },
+      },
+    ]),
+  ]);
+
+  const recentContracts = await Contract.find({ agentId: userId })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .select("_id customerId status amountCents currency signedAt createdAt");
+
+  const recentPayments = await Payment.find({ userId })
+    .sort({ period: -1 })
+    .limit(12)
+    .select("_id period totalAmountCents paidCents status currency createdAt");
+
+  return {
+    user: user.toObject(),
+    contractsByStatus,
+    activeCommissions,
+    bonusesByPeriod,
+    paymentsByStatus,
+    recentContracts,
+    recentPayments,
+  };
 }
 
 type CreateInput = {
@@ -88,9 +174,8 @@ async function validateHierarchy(
     if (managerId) throw new HttpError(400, "ADMIN cannot have a manager");
     return;
   }
-  if (role === "AGENT" && !managerId) {
-    throw new HttpError(400, "AGENT must have a manager");
-  }
+  // Per Review 1.0 §2: Agents can exist without an Area Manager.
+  // managerId becomes optional; if absent, the agent is unassigned.
   if (!managerId) return;
 
   const manager = await User.findOne({ _id: managerId, deletedAt: null });

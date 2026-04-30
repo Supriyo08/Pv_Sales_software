@@ -20,6 +20,9 @@ import {
   History,
   Wallet,
   FileText,
+  Calendar,
+  ShieldAlert,
+  Calculator,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -58,6 +61,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Catalog",
     items: [
       { to: "/solutions", label: "Solutions", icon: Package },
+      { to: "/quote", label: "Quote builder", icon: Calculator },
       { to: "/templates", label: "Contract templates", icon: FileText },
     ],
   },
@@ -77,8 +81,32 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/admin", label: "Bonuses", icon: Shield, roles: ["ADMIN"] },
       { to: "/admin/payments", label: "Payments", icon: Wallet, roles: ["ADMIN"] },
+      {
+        to: "/admin/installment-plans",
+        label: "Installment plans",
+        icon: Calendar,
+        roles: ["ADMIN"],
+      },
+      {
+        to: "/admin/price-approvals",
+        label: "Price approvals",
+        icon: ShieldAlert,
+        roles: ["ADMIN", "AREA_MANAGER"],
+      },
+      {
+        to: "/admin/pricing-formulas",
+        label: "Pricing formulas",
+        icon: Calculator,
+        roles: ["ADMIN"],
+      },
       { to: "/admin/users", label: "Users", icon: UserCog, roles: ["ADMIN"] },
       { to: "/admin/territories", label: "Territories", icon: Map, roles: ["ADMIN"] },
+      {
+        to: "/admin/customer-form",
+        label: "Customer form",
+        icon: UsersIcon,
+        roles: ["ADMIN"],
+      },
       { to: "/admin/audit-logs", label: "Audit logs", icon: History, roles: ["ADMIN"] },
     ],
   },
@@ -113,7 +141,8 @@ export function AppLayout() {
       <aside
         className={cn(
           "fixed lg:sticky top-0 z-40 h-screen bg-white border-r border-slate-200 flex flex-col transition-all duration-200",
-          collapsed ? "w-16" : "w-64",
+          // On mobile, the drawer is full-width; on lg+, fixed sidebar width.
+          mobileOpen ? "w-full lg:w-64" : collapsed ? "lg:w-16 w-64" : "w-64",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
       >
@@ -146,7 +175,12 @@ export function AppLayout() {
                 )}
                 <div className="space-y-0.5">
                   {items.map((item) => (
-                    <NavItemLink key={item.to} item={item} collapsed={collapsed} />
+                    <NavItemLink
+                      key={item.to}
+                      item={item}
+                      collapsed={collapsed && !mobileOpen}
+                      onNavigate={() => setMobileOpen(false)}
+                    />
                   ))}
                 </div>
               </div>
@@ -220,15 +254,18 @@ export function AppLayout() {
 function NavItemLink({
   item,
   collapsed,
+  onNavigate,
 }: {
   item: NavItem;
   collapsed: boolean;
+  onNavigate?: () => void;
 }) {
   const Icon = item.icon as ComponentType<{ className?: string }>;
   return (
     <NavLink
       to={item.to}
       end={item.to === "/dashboard"}
+      onClick={() => onNavigate?.()}
       className={({ isActive }) =>
         cn(
           "group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition",

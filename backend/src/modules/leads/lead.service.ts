@@ -2,6 +2,7 @@ import { Lead, LEAD_STATUSES, type LeadStatus } from "./lead.model";
 import { Customer } from "../customers/customer.model";
 import { User } from "../users/user.model";
 import { HttpError } from "../../middleware/error";
+import { agentIdMatch, type Scope } from "../../lib/scope";
 
 type CreateInput = {
   customerId: string;
@@ -19,16 +20,22 @@ const ALLOWED_TRANSITIONS: Record<LeadStatus, LeadStatus[]> = {
   LOST: [],
 };
 
-export async function list(filter: { agentId?: string; status?: LeadStatus }) {
-  const q: Record<string, unknown> = { deletedAt: null };
+export async function list(
+  filter: { agentId?: string; status?: LeadStatus },
+  scope: Scope
+) {
+  const q: Record<string, unknown> = { deletedAt: null, ...agentIdMatch(scope) };
   if (filter.agentId) q.agentId = filter.agentId;
   if (filter.status) q.status = filter.status;
   return Lead.find(q).sort({ createdAt: -1 }).limit(200);
 }
 
-export async function getById(id: string) {
+export async function getById(id: string, scope?: Scope) {
   const lead = await Lead.findOne({ _id: id, deletedAt: null });
   if (!lead) throw new HttpError(404, "Lead not found");
+  if (scope && !scope.isAdmin && !scope.agentIds.includes(lead.agentId.toString())) {
+    throw new HttpError(404, "Lead not found");
+  }
   return lead;
 }
 

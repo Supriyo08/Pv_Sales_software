@@ -70,6 +70,7 @@ export async function makeBonusRule(input: Partial<{
   basisPoints: number;
   validFrom: Date;
   name: string;
+  userId: string | null;
 }> = {}) {
   return BonusRule.create({
     name: input.name ?? "Test rule",
@@ -78,6 +79,7 @@ export async function makeBonusRule(input: Partial<{
     threshold: input.threshold ?? 2,
     basisPoints: input.basisPoints ?? 1000,
     validFrom: input.validFrom ?? new Date("2026-01-01"),
+    userId: input.userId ?? null,
   });
 }
 

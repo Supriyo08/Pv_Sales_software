@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText, Trash2, Edit3, Eye } from "lucide-react";
+import { FileText, Trash2, Edit3, Eye, Plus, ShieldAlert } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardHeader } from "../components/ui/Card";
@@ -11,6 +11,7 @@ import { Badge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDate } from "../lib/format";
+import { useRole } from "../store/auth";
 import type { ContractTemplate } from "../lib/api-types";
 
 const PLACEHOLDER_RE = /@([a-zA-Z_][a-zA-Z0-9_]*)/g;
@@ -53,8 +54,10 @@ function analyzeLocally(body: string) {
 }
 
 export function TemplatesAdmin() {
+  const role = useRole();
   const qc = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -102,12 +105,14 @@ export function TemplatesAdmin() {
 
   const reset = () => {
     setEditingId(null);
+    setEditorOpen(false);
     setForm({ name: "", description: "", body: SAMPLE, active: true });
     setError(null);
   };
 
   const startEdit = (t: ContractTemplate) => {
     setEditingId(t._id);
+    setEditorOpen(true);
     setForm({
       name: t.name,
       description: t.description,
@@ -118,13 +123,46 @@ export function TemplatesAdmin() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const openNew = () => {
+    setEditingId(null);
+    setEditorOpen(true);
+    setForm({ name: "", description: "", body: SAMPLE, active: true });
+    setError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // Defensive: only ADMIN can manage templates. Backend already enforces; this avoids confusion if a non-admin lands here.
+  if (role && role !== "ADMIN") {
+    return <Navigate to="/dashboard" replace />;
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Contract templates"
         description="Build templates with @placeholders and [[OPTIONAL:id|label]]…[[/OPTIONAL]] sections. Agents pick a template, fill the form, and the system generates the contract document."
+        action={
+          !editorOpen ? (
+            <Button onClick={openNew} icon={<Plus className="size-4" />}>
+              New template
+            </Button>
+          ) : null
+        }
       />
 
+      {!editorOpen && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="size-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-900">
+              Only <strong>admins</strong> can create or edit templates. Agents and area
+              managers can render existing templates from the table below.
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {editorOpen && (
       <Card>
         <h3 className="font-semibold mb-1">{editingId ? "Edit template" : "New template"}</h3>
         <p className="text-sm text-slate-500 mb-4">
@@ -222,13 +260,12 @@ export function TemplatesAdmin() {
           <Button onClick={() => save.mutate()} loading={save.isPending}>
             {editingId ? "Save changes" : "Create template"}
           </Button>
-          {editingId && (
-            <Button variant="outline" onClick={reset}>
-              Cancel edit
-            </Button>
-          )}
+          <Button variant="outline" onClick={reset}>
+            {editingId ? "Cancel edit" : "Cancel"}
+          </Button>
         </div>
       </Card>
+      )}
 
       <Card padding={false}>
         <CardHeader title={`All templates (${templates.length})`} />

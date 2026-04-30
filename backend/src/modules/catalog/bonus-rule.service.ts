@@ -10,11 +10,9 @@ type CreateInput = {
   basisPoints: number;
   validFrom: Date;
   validTo?: Date | null;
+  userId?: string | null;
 };
 
-// Which (role, conditionType) combos are valid:
-// - AGENT_INSTALLATIONS_GTE counts the user's own activated installations → only AGENT
-// - NETWORK_INSTALLATIONS_GTE counts the manager's network's activated installations → only AREA_MANAGER
 const VALID_COMBOS: Record<BonusCondition, UserRole[]> = {
   AGENT_INSTALLATIONS_GTE: ["AGENT"],
   NETWORK_INSTALLATIONS_GTE: ["AREA_MANAGER"],
@@ -39,6 +37,7 @@ export async function create(input: CreateInput) {
   return BonusRule.create({
     ...input,
     validTo: input.validTo ?? null,
+    userId: input.userId ?? null,
   });
 }
 
@@ -52,12 +51,25 @@ export async function softDelete(id: string) {
   return result;
 }
 
-export async function activeForRoleAt(role: UserRole, at: Date) {
+/**
+ * Active rules for a given role at a given date, including:
+ * - Global rules (userId=null)
+ * - User-scoped rules (userId matches)
+ *
+ * The bonus engine groups by ruleId so user-scoped overrides naturally take precedence
+ * (a single Bonus row exists per user+period+rule, and a user-scoped rule and a global
+ * rule are independent rows). For the engine to *prefer* user-scoped, see
+ * `pickEffectiveRulesForUser` below.
+ */
+export async function activeForRoleAt(role: UserRole, at: Date, userId?: string) {
+  const userScope: Record<string, unknown>[] = [{ userId: null }];
+  if (userId) userScope.push({ userId });
   return BonusRule.find({
     role,
     deletedAt: null,
     validFrom: { $lte: at },
     $or: [{ validTo: null }, { validTo: { $gt: at } }],
+    $and: [{ $or: userScope }],
   }).sort({ basisPoints: -1 });
 }
 

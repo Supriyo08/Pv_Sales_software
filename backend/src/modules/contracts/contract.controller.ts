@@ -2,9 +2,10 @@ import type { RequestHandler } from "express";
 import { z } from "zod";
 import { Types } from "mongoose";
 import * as contractService from "./contract.service";
-import { CONTRACT_STATUSES } from "./contract.model";
+import { CONTRACT_STATUSES, PAYMENT_METHODS } from "./contract.model";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
+import { buildScope } from "../../lib/scope";
 
 const objectId = z
   .string()
@@ -19,6 +20,9 @@ const createSchema = z.object({
   amountCents: z.number().int().min(0),
   currency: z.string().length(3).optional(),
   leadId: objectId.nullish(),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  advanceCents: z.number().int().min(0).optional(),
+  installmentPlanId: objectId.nullish(),
 }).refine((v) => v.solutionVersionId || v.solutionId, {
   message: "Either solutionVersionId or solutionId must be provided",
   path: ["solutionVersionId"],
@@ -28,9 +32,10 @@ const cancelSchema = z.object({ reason: z.string().optional() });
 
 export const list: RequestHandler = async (req, res, next) => {
   try {
+    const scope = await buildScope(req.user);
     const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
     const status = typeof req.query.status === "string" ? (req.query.status as never) : undefined;
-    res.json(await contractService.list({ agentId, status }));
+    res.json(await contractService.list({ agentId, status }, scope));
   } catch (err) {
     next(err);
   }
@@ -38,7 +43,8 @@ export const list: RequestHandler = async (req, res, next) => {
 
 export const get: RequestHandler = async (req, res, next) => {
   try {
-    res.json(await contractService.getById(req.params.id!));
+    const scope = await buildScope(req.user);
+    res.json(await contractService.getById(req.params.id!, scope));
   } catch (err) {
     next(err);
   }
@@ -51,6 +57,7 @@ export const create: RequestHandler = async (req, res, next) => {
     const c = await contractService.create({
       ...body,
       leadId: body.leadId ?? null,
+      installmentPlanId: body.installmentPlanId ?? null,
     });
     void audit.log({
       actorId: req.user.sub,
@@ -69,7 +76,7 @@ export const create: RequestHandler = async (req, res, next) => {
 export const sign: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
-    const before = (await contractService.getById(req.params.id!)).toObject();
+    const before = (await contractService.getById(req.params.id!, await buildScope(req.user))).toObject();
     const c = await contractService.sign(req.params.id!);
     void audit.log({
       actorId: req.user.sub,
@@ -86,11 +93,51 @@ export const sign: RequestHandler = async (req, res, next) => {
   }
 };
 
+const attachScanSchema = z.object({ documentId: objectId });
+
+export const attachSignedScan: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = attachScanSchema.parse(req.body);
+    const c = await contractService.attachSignedScan(req.params.id!, body.documentId);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.attach-scan",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      metadata: { documentId: body.documentId },
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const approve: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const c = await contractService.approve(req.params.id!, req.user.sub);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.approve",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const cancel: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
     const body = cancelSchema.parse(req.body);
-    const before = (await contractService.getById(req.params.id!)).toObject();
+    const before = (await contractService.getById(req.params.id!, await buildScope(req.user))).toObject();
     const c = await contractService.cancel(req.params.id!, body.reason ?? "");
     void audit.log({
       actorId: req.user.sub,
