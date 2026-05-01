@@ -11,6 +11,13 @@ export type User = {
   createdAt: string;
 };
 
+export type CommissionSplit = {
+  agentSplits: { userId: string; bp: number }[];
+  bonusCountBeneficiaryId: string | null;
+  managerBonusBeneficiaryId: string | null;
+  managerOverrideBeneficiaryId: string | null;
+};
+
 export type Customer = {
   _id: string;
   fiscalCode: string;
@@ -19,6 +26,8 @@ export type Customer = {
   phone: string;
   address?: { line1?: string; city?: string; postalCode?: string; country?: string };
   assignedAgentId: string | null;
+  // Per Review 1.1 §6.
+  commissionSplit: CommissionSplit | null;
   createdAt: string;
 };
 
@@ -26,7 +35,23 @@ export type Solution = {
   _id: string;
   name: string;
   description: string;
+  // Per Review 1.1 §3.
+  active: boolean;
+  deletedAt: string | null;
   createdAt: string;
+};
+
+// Per Review 1.1 §3: enriched payload for the Solutions admin list.
+export type SolutionEnriched = Solution & {
+  activeVersion: {
+    _id: string;
+    basePriceCents: number;
+    currency: string;
+    agentBp: number;
+    managerBp: number;
+    changeReason: string;
+  } | null;
+  installmentPlans: { _id: string; name: string; months: number }[];
 };
 
 export type SolutionVersion = {
@@ -86,6 +111,11 @@ export type Contract = {
   signedScanDocumentId: string | null;
   approvedAt: string | null;
   approvedBy: string | null;
+  // Per Review 1.1 §1: generation approval gate.
+  generatedDocumentId: string | null;
+  generatedFromTemplateId: string | null;
+  generationApprovedAt: string | null;
+  generationApprovedBy: string | null;
   createdAt: string;
 };
 
@@ -135,6 +165,10 @@ export type InstallmentPlan = {
   surchargeBp: number;
   description: string;
   active: boolean;
+  // Per Review 1.1 §4: empty array = applies to all solutions.
+  solutionIds: string[];
+  advanceMinCents: number | null;
+  advanceMaxCents: number | null;
   createdAt: string;
 };
 
@@ -261,6 +295,57 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdvancePayAuthorization = {
+  _id: string;
+  contractId: string;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  status: "PENDING" | "AUTHORIZED" | "DECLINED" | "RESOLVED_BY_INSTALL";
+  note: string;
+  createdAt: string;
+};
+
+export type ReversalReview = {
+  _id: string;
+  kind: "COMMISSION" | "BONUS";
+  subjectId: string;
+  contractId: string;
+  installationId: string;
+  beneficiaryUserId: string;
+  period: string | null;
+  suggestedAction: "KEEP" | "REVERT" | "REDUCE";
+  amountCents: number;
+  currency: string;
+  status: "PENDING" | "DECIDED";
+  decision: "KEEP" | "REVERT" | "REDUCE" | null;
+  reduceCents: number | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string;
+  createdAt: string;
+};
+
+export type ContractEditRequest = {
+  _id: string;
+  contractId: string;
+  requestedBy: string;
+  changes: {
+    amountCents?: number;
+    paymentMethod?: ContractPaymentMethod;
+    advanceCents?: number;
+    installmentPlanId?: string | null;
+    solutionVersionId?: string;
+  };
+  reason: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Notification = {
   _id: string;
   userId: string;
@@ -285,6 +370,8 @@ export type ContractTemplate = {
   description: string;
   body: string;
   active: boolean;
+  // Per Review 1.1 §2: empty array = applies to all solutions.
+  solutionIds: string[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;

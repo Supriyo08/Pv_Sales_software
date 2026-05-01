@@ -55,6 +55,25 @@ export async function logout(userId: string, token: string): Promise<void> {
   await redis.del(REFRESH_KEY(userId, token));
 }
 
+/**
+ * Per Review 1.1 §5: revoke every refresh token for a user — used by admin
+ * password-reset to force the target user out of all active sessions. Access
+ * tokens stay valid until their TTL (~15 min) but can't be refreshed.
+ */
+export async function revokeAllRefreshTokens(userId: string): Promise<number> {
+  const pattern = REFRESH_KEY(userId, "*");
+  let cursor = "0";
+  let removed = 0;
+  do {
+    const [next, keys] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 200);
+    cursor = next;
+    if (keys.length > 0) {
+      removed += await redis.del(...keys);
+    }
+  } while (cursor !== "0");
+  return removed;
+}
+
 async function issueTokens(userId: string, role: string) {
   const accessToken = signAccessToken({ sub: userId, role });
   const refreshToken = signRefreshToken({ sub: userId, role });

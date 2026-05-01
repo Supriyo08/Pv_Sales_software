@@ -75,10 +75,20 @@ export function ContractNew() {
     enabled: !!solutionId,
   });
 
+  // Per Review 1.1 §4: filter by selected solution. Backend returns plans whose
+  // solutionIds include the chosen solution OR have empty solutionIds (= all).
   const { data: plans = [] } = useQuery<InstallmentPlan[]>({
-    queryKey: ["installment-plans", "active"],
+    queryKey: ["installment-plans", "active", { solutionId }],
     queryFn: async () =>
-      (await api.get("/catalog/installment-plans", { params: { active: true } })).data,
+      (
+        await api.get("/catalog/installment-plans", {
+          params: {
+            active: "true",
+            solutionId: solutionId || undefined,
+          },
+        })
+      ).data,
+    enabled: true,
   });
   const activePlans = plans.filter((p) => p.active);
 
@@ -339,7 +349,15 @@ export function ContractNew() {
           )}
 
           {paymentMethod === "ADVANCE_INSTALLMENTS" && (
-            <Field label="Advance (EUR)" required hint="Paid upfront; remaining is split monthly.">
+            <Field
+              label="Advance (EUR)"
+              required
+              hint={
+                selectedPlan && (selectedPlan.advanceMinCents !== null || selectedPlan.advanceMaxCents !== null)
+                  ? `Plan range: ${selectedPlan.advanceMinCents !== null ? formatCents(selectedPlan.advanceMinCents, "EUR") : "no min"} → ${selectedPlan.advanceMaxCents !== null ? formatCents(selectedPlan.advanceMaxCents, "EUR") : "no max"}`
+                  : "Paid upfront; remaining is split monthly."
+              }
+            >
               <Input
                 type="number"
                 min="0"
@@ -348,6 +366,22 @@ export function ContractNew() {
                 onChange={(e) => setAdvanceEuro(e.target.value)}
                 required
               />
+              {selectedPlan && advanceEuro && (() => {
+                const v = Math.round(parseFloat(advanceEuro) * 100);
+                const tooLow =
+                  selectedPlan.advanceMinCents !== null && v < selectedPlan.advanceMinCents;
+                const tooHigh =
+                  selectedPlan.advanceMaxCents !== null && v > selectedPlan.advanceMaxCents;
+                return tooLow || tooHigh ? (
+                  <p className="mt-1 text-xs text-red-600">
+                    Advance is{" "}
+                    {tooLow
+                      ? `below the plan's min ${formatCents(selectedPlan.advanceMinCents!, "EUR")}`
+                      : `above the plan's max ${formatCents(selectedPlan.advanceMaxCents!, "EUR")}`}
+                    .
+                  </p>
+                ) : null;
+              })()}
             </Field>
           )}
 

@@ -7,6 +7,9 @@ export const INSTALLATION_STATUSES = [
   "INSTALLED",
   "ACTIVATED",
   "INSPECTED",
+  // Per Review 1.1 §7: cancellation invalidates any commission/bonus that depended
+  // on this installation. Triggers a reversal review (admin chooses what to do).
+  "CANCELLED",
 ] as const;
 export type InstallationStatus = (typeof INSTALLATION_STATUSES)[number];
 
@@ -25,6 +28,9 @@ const installationSchema = new Schema(
     status: { type: String, enum: INSTALLATION_STATUSES, default: "SCHEDULED", index: true },
     milestones: { type: [milestoneSchema], default: [] },
     activatedAt: { type: Date, default: null, index: true },
+    // Per Review 1.1 §7: cancellation metadata.
+    cancelledAt: { type: Date, default: null },
+    cancellationReason: { type: String, default: "" },
   },
   { timestamps: true }
 );

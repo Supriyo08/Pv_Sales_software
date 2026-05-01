@@ -17,6 +17,9 @@ import auditRoutes from "../modules/audit/audit.routes";
 import templateRoutes from "../modules/templates/template.routes";
 import priceApprovalRoutes from "../modules/price-approvals/price-approval.routes";
 import pricingFormulaRoutes from "../modules/custom-pricing/pricing.routes";
+import contractEditRequestRoutes from "../modules/contract-edit-requests/contract-edit-request.routes";
+import advancePayAuthRoutes from "../modules/advance-pay-authorizations/advance-pay-auth.routes";
+import reversalReviewRoutes from "../modules/reversal-reviews/reversal-review.routes";
 
 const router = Router();
 
@@ -38,5 +41,8 @@ router.use("/audit-logs", auditRoutes);
 router.use("/templates", templateRoutes);
 router.use("/price-approvals", priceApprovalRoutes);
 router.use("/pricing-formulas", pricingFormulaRoutes);
+router.use("/contract-edit-requests", contractEditRequestRoutes);
+router.use("/advance-pay-authorizations", advancePayAuthRoutes);
+router.use("/reversal-reviews", reversalReviewRoutes);
 
 export default router;

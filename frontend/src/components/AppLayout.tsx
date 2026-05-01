@@ -23,6 +23,9 @@ import {
   Calendar,
   ShieldAlert,
   Calculator,
+  PencilLine,
+  HandCoins,
+  AlertOctagon,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -45,6 +48,27 @@ type NavItem = {
   label: string;
   icon: LucideIcon;
   roles?: ("ADMIN" | "AREA_MANAGER" | "AGENT")[];
+  // Per Review 1.1 §8: count badge fetcher (e.g. pending approvals).
+  badgeFetcher?: () => Promise<number>;
+};
+
+// Lazy fetchers for badge counts. Each returns the count of pending items so the
+// sidebar can show "(3)" next to a section item. Polled every 30s by TanStack.
+const pendingCounts = {
+  contractEdits: async () =>
+    (await api.get<{ count: number }>("/contract-edit-requests/pending-count")).data
+      .count,
+  priceApprovals: async () => {
+    const { data } = await api.get<unknown[]>("/price-approvals", {
+      params: { status: "PENDING" },
+    });
+    return Array.isArray(data) ? data.length : 0;
+  },
+  advancePay: async () =>
+    (await api.get<{ count: number }>("/advance-pay-authorizations/pending-count")).data
+      .count,
+  reversalReviews: async () =>
+    (await api.get<{ count: number }>("/reversal-reviews/pending-count")).data.count,
 };
 
 const NAV: { section: string; items: NavItem[] }[] = [
@@ -63,6 +87,41 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: "/solutions", label: "Solutions", icon: Package },
       { to: "/quote", label: "Quote builder", icon: Calculator },
       { to: "/templates", label: "Contract templates", icon: FileText },
+    ],
+  },
+  // Per Review 1.1 §8: dedicated Approvals section grouping every queue that
+  // needs admin/AM action. Each item shows a count badge polled every 30s.
+  {
+    section: "Approvals",
+    items: [
+      {
+        to: "/admin/contract-edit-requests",
+        label: "Contract edits",
+        icon: PencilLine,
+        roles: ["ADMIN", "AREA_MANAGER"],
+        badgeFetcher: pendingCounts.contractEdits,
+      },
+      {
+        to: "/admin/price-approvals",
+        label: "Price approvals",
+        icon: ShieldAlert,
+        roles: ["ADMIN", "AREA_MANAGER"],
+        badgeFetcher: pendingCounts.priceApprovals,
+      },
+      {
+        to: "/admin/advance-pay",
+        label: "Advance pay",
+        icon: HandCoins,
+        roles: ["ADMIN", "AREA_MANAGER"],
+        badgeFetcher: pendingCounts.advancePay,
+      },
+      {
+        to: "/admin/reversal-reviews",
+        label: "Reversal reviews",
+        icon: AlertOctagon,
+        roles: ["ADMIN"],
+        badgeFetcher: pendingCounts.reversalReviews,
+      },
     ],
   },
   {
@@ -86,12 +145,6 @@ const NAV: { section: string; items: NavItem[] }[] = [
         label: "Installment plans",
         icon: Calendar,
         roles: ["ADMIN"],
-      },
-      {
-        to: "/admin/price-approvals",
-        label: "Price approvals",
-        icon: ShieldAlert,
-        roles: ["ADMIN", "AREA_MANAGER"],
       },
       {
         to: "/admin/pricing-formulas",
@@ -261,6 +314,14 @@ function NavItemLink({
   onNavigate?: () => void;
 }) {
   const Icon = item.icon as ComponentType<{ className?: string }>;
+  // Per Review 1.1 §8: badge counts polled every 30s. Hidden when zero.
+  const { data: badgeCount } = useQuery({
+    queryKey: ["nav-badge", item.to],
+    queryFn: item.badgeFetcher!,
+    enabled: !!item.badgeFetcher,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
   return (
     <NavLink
       to={item.to}
@@ -278,7 +339,17 @@ function NavItemLink({
       title={collapsed ? item.label : undefined}
     >
       <Icon className="size-4 shrink-0" />
-      {!collapsed && <span>{item.label}</span>}
+      {!collapsed && <span className="flex-1">{item.label}</span>}
+      {!collapsed && badgeCount !== undefined && badgeCount > 0 && (
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 min-w-[1.25rem] text-center">
+          {badgeCount}
+        </span>
+      )}
+      {collapsed && badgeCount !== undefined && badgeCount > 0 && (
+        <span className="absolute right-1 top-1 text-[9px] font-semibold px-1 rounded-full bg-amber-100 text-amber-800">
+          {badgeCount}
+        </span>
+      )}
     </NavLink>
   );
 }

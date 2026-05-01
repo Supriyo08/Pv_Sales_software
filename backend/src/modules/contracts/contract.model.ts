@@ -51,6 +51,12 @@ const contractSchema = new Schema(
     signedScanDocumentId: { type: Schema.Types.ObjectId, ref: "Document", default: null },
     approvedAt: { type: Date, default: null },
     approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    // Per Review 1.1 §1: generation approval gate. Agent generates the PDF on the
+    // contract page; admin/AM must approve it before agent can sign/print/upload-signed.
+    generatedDocumentId: { type: Schema.Types.ObjectId, ref: "Document", default: null },
+    generatedFromTemplateId: { type: Schema.Types.ObjectId, ref: "ContractTemplate", default: null },
+    generationApprovedAt: { type: Date, default: null },
+    generationApprovedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
 );

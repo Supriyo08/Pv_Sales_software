@@ -1,6 +1,8 @@
 import { Types, type HydratedDocument } from "mongoose";
 import { Commission, type CommissionDoc } from "./commission.model";
 import { Contract } from "../contracts/contract.model";
+import { Customer } from "../customers/customer.model";
+import { User } from "../users/user.model";
 import { SolutionVersion } from "../catalog/solution-version.model";
 import { calcCommissionCents } from "../../lib/money";
 import { logger } from "../../utils/logger";
@@ -71,44 +73,74 @@ export async function generateForContract(
   // ADVANCE_INSTALLMENTS take the full amount.
   const effectiveBaseCents = await effectiveBaseForCommission(contract);
 
-  let agentCommissionCents = 0;
-  if (contract.agentId && version.agentBp > 0) {
-    agentCommissionCents = calcCommissionCents(effectiveBaseCents, version.agentBp);
-    const c = await Commission.create({
-      contractId,
-      beneficiaryUserId: contract.agentId,
-      beneficiaryRole: "AGENT",
-      sourceEvent: "CONTRACT_SIGNED",
-      amountCents: agentCommissionCents,
-      currency: contract.currency,
-      period,
-      reason,
-      metadata: {
-        solutionVersionId: versionId,
-        bp: version.agentBp,
-        baseCents: effectiveBaseCents,
-        contractAmountCents: contract.amountCents,
-        paymentMethod: contract.paymentMethod,
-        baseKind: "CONTRACT_AMOUNT",
-      },
-    });
-    created.push(c);
+  // Per Review 1.1 §6: customer.commissionSplit allows splitting the agent
+  // commission across multiple agents and overriding which AM gets the override.
+  // Falls back to single-agent behavior when no split configured.
+  const customer = await Customer.findById(contract.customerId).lean();
+  const split = customer?.commissionSplit ?? null;
+  const splits =
+    split && split.agentSplits && split.agentSplits.length > 0
+      ? split.agentSplits.map((e) => ({
+          userId: e.userId.toString(),
+          bp: e.bp,
+        }))
+      : [{ userId: contract.agentId.toString(), bp: 10_000 }];
+
+  let totalAgentCommissionCents = 0;
+  if (version.agentBp > 0) {
+    for (const entry of splits) {
+      // amount = effectiveBase * agentBp * splitBp / 1e8 (basis-points × basis-points)
+      const fullForThisAgent = calcCommissionCents(effectiveBaseCents, version.agentBp);
+      const portionCents = Math.round((fullForThisAgent * entry.bp) / 10_000);
+      if (portionCents <= 0) continue;
+      const c = await Commission.create({
+        contractId,
+        beneficiaryUserId: entry.userId,
+        beneficiaryRole: "AGENT",
+        sourceEvent: "CONTRACT_SIGNED",
+        amountCents: portionCents,
+        currency: contract.currency,
+        period,
+        reason,
+        metadata: {
+          solutionVersionId: versionId,
+          bp: version.agentBp,
+          splitBp: entry.bp,
+          baseCents: effectiveBaseCents,
+          contractAmountCents: contract.amountCents,
+          paymentMethod: contract.paymentMethod,
+          baseKind: "CONTRACT_AMOUNT",
+          isSplit: splits.length > 1,
+        },
+      });
+      created.push(c);
+      totalAgentCommissionCents += portionCents;
+    }
   }
 
-  // Manager override is calculated on the AGENT commission, not the contract amount.
-  // Additive — does not deduct from the agent.
-  if (
-    contract.managerId &&
-    version.managerBp > 0 &&
-    agentCommissionCents > 0
-  ) {
+  // Manager override is calculated on the TOTAL AGENT commission (sum across splits),
+  // not the contract amount. Additive — does not deduct from the agent.
+  // Per Review 1.1 §6: if customer.commissionSplit.managerOverrideBeneficiaryId is
+  // set, that user receives the override instead of contract.managerId.
+  let managerBeneficiaryId: Types.ObjectId | null = null;
+  if (split?.managerOverrideBeneficiaryId) {
+    managerBeneficiaryId = split.managerOverrideBeneficiaryId as Types.ObjectId;
+  } else if (contract.managerId) {
+    managerBeneficiaryId = contract.managerId as Types.ObjectId;
+  } else if (splits.length > 0) {
+    // No managerId on contract — derive from primary agent's manager.
+    const primaryAgent = await User.findById(splits[0]!.userId).lean();
+    managerBeneficiaryId = (primaryAgent?.managerId as Types.ObjectId) ?? null;
+  }
+
+  if (managerBeneficiaryId && version.managerBp > 0 && totalAgentCommissionCents > 0) {
     const managerCommissionCents = calcCommissionCents(
-      agentCommissionCents,
+      totalAgentCommissionCents,
       version.managerBp
     );
     const c = await Commission.create({
       contractId,
-      beneficiaryUserId: contract.managerId,
+      beneficiaryUserId: managerBeneficiaryId,
       beneficiaryRole: "AREA_MANAGER",
       sourceEvent: "CONTRACT_SIGNED",
       amountCents: managerCommissionCents,
@@ -118,8 +150,9 @@ export async function generateForContract(
       metadata: {
         solutionVersionId: versionId,
         bp: version.managerBp,
-        baseCents: agentCommissionCents,
+        baseCents: totalAgentCommissionCents,
         baseKind: "AGENT_COMMISSION",
+        viaSplitOverride: !!split?.managerOverrideBeneficiaryId,
       },
     });
     created.push(c);

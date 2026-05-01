@@ -5,6 +5,8 @@ import { env } from "./config/env";
 import { logger } from "./utils/logger";
 import { registerCommissionHandlers } from "./modules/commissions/commission.handlers";
 import { registerNotificationHandlers } from "./modules/notifications/notification.handlers";
+import { registerAdvancePayAuthHandlers } from "./modules/advance-pay-authorizations/advance-pay-auth.handlers";
+import { registerReversalReviewHandlers } from "./modules/reversal-reviews/reversal-review.handlers";
 import { startBonusWorker, scheduleMonthlyBonus } from "./modules/bonuses/bonus.worker";
 import { shutdownQueues } from "./lib/queue";
 
@@ -13,6 +15,8 @@ async function main() {
 
   registerCommissionHandlers();
   registerNotificationHandlers();
+  registerAdvancePayAuthHandlers();
+  registerReversalReviewHandlers();
   startBonusWorker();
   await scheduleMonthlyBonus();
 

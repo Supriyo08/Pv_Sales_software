@@ -133,6 +133,55 @@ export const approve: RequestHandler = async (req, res, next) => {
   }
 };
 
+const generateSchema = z.object({
+  templateId: objectId,
+  values: z.record(z.string()).default({}),
+  omitSections: z.array(z.string()).optional(),
+});
+
+export const generate: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = generateSchema.parse(req.body);
+    const result = await contractService.generate(req.params.id!, {
+      templateId: body.templateId,
+      values: body.values,
+      omitSections: body.omitSections,
+      generatedBy: req.user.sub,
+    });
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.generate",
+      targetType: "Contract",
+      targetId: result.contract._id.toString(),
+      after: result.contract.toObject(),
+      metadata: { templateId: body.templateId, documentId: result.document._id.toString() },
+      requestId: req.requestId,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const approveGenerated: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const c = await contractService.approveGenerated(req.params.id!, req.user.sub);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.generation.approve",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const cancel: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");

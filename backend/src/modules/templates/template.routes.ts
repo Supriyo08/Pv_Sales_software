@@ -9,6 +9,7 @@ router.get("/", ctrl.list);
 router.get("/:id", ctrl.get);
 router.post("/:id/render", ctrl.render);
 router.post("/", requireRole("ADMIN"), ctrl.create);
+router.post("/upload", requireRole("ADMIN"), ctrl.uploadMiddleware, ctrl.upload);
 router.patch("/:id", requireRole("ADMIN"), ctrl.update);
 router.delete("/:id", requireRole("ADMIN"), ctrl.remove);
 

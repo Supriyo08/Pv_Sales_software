@@ -7,6 +7,18 @@ export const NOTIFICATION_KINDS = [
   "BONUS_CALCULATED",
   "PAYMENT_CREATED",
   "PAYMENT_DISPUTED",
+  // Per Review 1.1 §1: contract edit-request workflow.
+  "CONTRACT_EDIT_REQUESTED",
+  "CONTRACT_EDIT_APPROVED",
+  "CONTRACT_EDIT_REJECTED",
+  // Per Review 1.1 §1: generation approval gate before agent can sign/print.
+  "CONTRACT_GENERATION_REQUESTED",
+  "CONTRACT_GENERATION_APPROVED",
+  // Per Review 1.1 §8: AM advance-payment authorization.
+  "ADVANCE_PAY_AUTH_REQUESTED",
+  "ADVANCE_PAY_AUTH_DECIDED",
+  // Per Review 1.1 §7: bonus/commission reversal review needed.
+  "REVERSAL_REVIEW_CREATED",
 ] as const;
 
 const notificationSchema = new Schema(

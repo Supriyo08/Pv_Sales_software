@@ -13,6 +13,8 @@ const ORDER: Record<InstallationStatus, number> = {
   INSTALLED: 3,
   ACTIVATED: 4,
   INSPECTED: 5,
+  // CANCELLED is reachable from any status; not part of the forward order.
+  CANCELLED: -1,
 };
 
 export async function list(filter: { status?: InstallationStatus }) {
@@ -37,6 +39,12 @@ export async function transition(
   if (!inst) throw new HttpError(404, "Installation not found");
 
   const current = inst.status as InstallationStatus;
+  if (current === "CANCELLED") {
+    throw new HttpError(400, "Cancelled installations cannot be transitioned");
+  }
+  if (nextStatus === "CANCELLED") {
+    throw new HttpError(400, "Use POST /installations/:id/cancel to cancel an installation");
+  }
   if (ORDER[nextStatus] <= ORDER[current]) {
     throw new HttpError(400, `Cannot move from ${current} to ${nextStatus} (forward-only)`);
   }
@@ -58,6 +66,38 @@ export async function transition(
     });
   }
   return inst;
+}
+
+/**
+ * Per Review 1.1 §7: cancel an installation. Clears `activatedAt` (so any future
+ * bonus run won't re-count this), records the reason, and emits
+ * `installation.reversed` so reversal-review handlers can flag affected
+ * commissions/bonuses for admin decision (no auto-revert).
+ */
+export async function cancel(id: string, reason: string) {
+  const inst = await Installation.findById(id);
+  if (!inst) throw new HttpError(404, "Installation not found");
+  if (inst.status === "CANCELLED") {
+    return { installation: inst, previousStatus: "CANCELLED" as InstallationStatus };
+  }
+
+  const previousStatus = inst.status as InstallationStatus;
+  inst.status = "CANCELLED";
+  inst.cancelledAt = new Date();
+  inst.cancellationReason = reason;
+  inst.activatedAt = null;
+  inst.milestones.push({
+    status: "CANCELLED",
+    date: new Date(),
+    notes: reason,
+  });
+  await inst.save();
+
+  events.emit("installation.reversed", {
+    installationId: inst._id.toString(),
+    contractId: inst.contractId.toString(),
+  });
+  return { installation: inst, previousStatus };
 }
 
 export { INSTALLATION_STATUSES };

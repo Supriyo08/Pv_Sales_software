@@ -34,12 +34,23 @@ export function TBody({ children }: { children: ReactNode }) {
   return <tbody className="divide-y divide-slate-100 bg-white">{children}</tbody>;
 }
 
-export function Tr({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+export function Tr({
+  children,
+  onClick,
+  className,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  className?: string;
+}) {
+  const cls = [
+    onClick ? "cursor-pointer transition hover:bg-slate-50" : "",
+    className ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <tr
-      onClick={onClick}
-      className={onClick ? "cursor-pointer transition hover:bg-slate-50" : undefined}
-    >
+    <tr onClick={onClick} className={cls || undefined}>
       {children}
     </tr>
   );

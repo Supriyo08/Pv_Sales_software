@@ -1,3 +1,5 @@
+import path from "path";
+import fs from "fs";
 import { Contract, type ContractStatus, type PaymentMethod } from "./contract.model";
 import { Customer } from "../customers/customer.model";
 import { User } from "../users/user.model";
@@ -5,6 +7,9 @@ import { SolutionVersion } from "../catalog/solution-version.model";
 import { InstallmentPlan } from "../catalog/installment-plan.model";
 import { Lead } from "../leads/lead.model";
 import { Installation } from "../installations/installation.model";
+import { ContractTemplate } from "../templates/template.model";
+import * as templateService from "../templates/template.service";
+import * as documentService from "../documents/document.service";
 import { HttpError } from "../../middleware/error";
 import { events } from "../../lib/events";
 import { agentIdMatch, type Scope } from "../../lib/scope";
@@ -132,6 +137,27 @@ export async function create(input: CreateInput) {
       if (input.advanceCents >= input.amountCents) {
         throw new HttpError(400, "advanceCents must be less than the contract amount");
       }
+      // Per Review 1.1 §4: advance must fall within the plan's configured range (if set).
+      if (
+        plan.advanceMinCents !== null &&
+        plan.advanceMinCents !== undefined &&
+        input.advanceCents < plan.advanceMinCents
+      ) {
+        throw new HttpError(
+          400,
+          `advanceCents below the plan's min (${plan.advanceMinCents})`
+        );
+      }
+      if (
+        plan.advanceMaxCents !== null &&
+        plan.advanceMaxCents !== undefined &&
+        input.advanceCents > plan.advanceMaxCents
+      ) {
+        throw new HttpError(
+          400,
+          `advanceCents above the plan's max (${plan.advanceMaxCents})`
+        );
+      }
       advanceCents = input.advanceCents;
       installmentAmountCents = Math.round(
         (input.amountCents - input.advanceCents) / plan.months
@@ -166,10 +192,146 @@ export async function create(input: CreateInput) {
   });
 }
 
+/**
+ * Per Review 1.1 §1: applied by admin/AM after approving a ContractEditRequest.
+ * Whitelisted fields only — re-runs the same validation as create() (price range,
+ * payment method invariants, plan lookup) before persisting. Emits `contract.updated`
+ * so commission handlers can recalculate.
+ *
+ * Cancelled or already-signed-and-approved contracts cannot be edited.
+ */
+export type EditableContractFields = {
+  amountCents?: number;
+  paymentMethod?: PaymentMethod;
+  advanceCents?: number;
+  installmentPlanId?: string | null;
+  solutionVersionId?: string;
+};
+
+export async function applyEdit(id: string, changes: EditableContractFields) {
+  const contract = await getById(id);
+  if (contract.status === "CANCELLED") {
+    throw new HttpError(400, "Cannot edit a cancelled contract");
+  }
+
+  // Determine effective version (existing or new) for price-range validation
+  let version;
+  const nextVersionId = changes.solutionVersionId ?? contract.solutionVersionId.toString();
+  version = await SolutionVersion.findById(nextVersionId);
+  if (!version) throw new HttpError(400, "Solution version not found");
+
+  const nextAmount = changes.amountCents ?? contract.amountCents;
+  if (
+    version.minPriceCents !== null &&
+    version.minPriceCents !== undefined &&
+    nextAmount < version.minPriceCents
+  ) {
+    throw new HttpError(
+      400,
+      `amountCents below the version's min (${version.minPriceCents}). Use the price-approval flow instead.`
+    );
+  }
+  if (
+    version.maxPriceCents !== null &&
+    version.maxPriceCents !== undefined &&
+    nextAmount > version.maxPriceCents
+  ) {
+    throw new HttpError(
+      400,
+      `amountCents above the version's max (${version.maxPriceCents}).`
+    );
+  }
+
+  const nextPaymentMethod: PaymentMethod = changes.paymentMethod ?? contract.paymentMethod;
+  let installmentMonths: number | null = contract.installmentMonths ?? null;
+  let installmentAmountCents: number | null = contract.installmentAmountCents ?? null;
+  let advanceCents = contract.advanceCents ?? 0;
+  const nextPlanId =
+    changes.installmentPlanId !== undefined
+      ? changes.installmentPlanId
+      : contract.installmentPlanId?.toString() ?? null;
+
+  if (nextPaymentMethod === "ONE_TIME") {
+    if (nextPlanId) throw new HttpError(400, "ONE_TIME payment cannot have an installment plan");
+    advanceCents = 0;
+    installmentMonths = null;
+    installmentAmountCents = null;
+  } else {
+    if (!nextPlanId) {
+      throw new HttpError(400, `${nextPaymentMethod} requires an installmentPlanId`);
+    }
+    const plan = await InstallmentPlan.findOne({
+      _id: nextPlanId,
+      deletedAt: null,
+      active: true,
+    });
+    if (!plan) throw new HttpError(400, "Installment plan not found or inactive");
+    installmentMonths = plan.months;
+
+    if (nextPaymentMethod === "ADVANCE_INSTALLMENTS") {
+      const nextAdvance =
+        changes.advanceCents !== undefined ? changes.advanceCents : contract.advanceCents;
+      if (!nextAdvance || nextAdvance <= 0) {
+        throw new HttpError(400, "ADVANCE_INSTALLMENTS requires advanceCents > 0");
+      }
+      if (nextAdvance >= nextAmount) {
+        throw new HttpError(400, "advanceCents must be less than the contract amount");
+      }
+      if (
+        plan.advanceMinCents !== null &&
+        plan.advanceMinCents !== undefined &&
+        nextAdvance < plan.advanceMinCents
+      ) {
+        throw new HttpError(
+          400,
+          `advanceCents below the plan's min (${plan.advanceMinCents})`
+        );
+      }
+      if (
+        plan.advanceMaxCents !== null &&
+        plan.advanceMaxCents !== undefined &&
+        nextAdvance > plan.advanceMaxCents
+      ) {
+        throw new HttpError(
+          400,
+          `advanceCents above the plan's max (${plan.advanceMaxCents})`
+        );
+      }
+      advanceCents = nextAdvance;
+      installmentAmountCents = Math.round((nextAmount - nextAdvance) / plan.months);
+    } else {
+      // FULL_INSTALLMENTS
+      advanceCents = 0;
+      installmentAmountCents = Math.round(nextAmount / plan.months);
+    }
+  }
+
+  contract.amountCents = nextAmount;
+  contract.paymentMethod = nextPaymentMethod;
+  contract.advanceCents = advanceCents;
+  contract.installmentPlanId = (nextPlanId ?? null) as unknown as typeof contract.installmentPlanId;
+  contract.installmentMonths = installmentMonths;
+  contract.installmentAmountCents = installmentAmountCents;
+  contract.solutionVersionId = version._id as unknown as typeof contract.solutionVersionId;
+
+  await contract.save();
+  events.emit("contract.updated", { contractId: contract._id.toString() });
+  return contract;
+}
+
 export async function sign(id: string) {
   const contract = await getById(id);
   if (contract.status !== "DRAFT") {
     throw new HttpError(400, `Cannot sign contract in status ${contract.status}`);
+  }
+
+  // Per Review 1.1 §1: if a generated draft exists, admin/AM must approve it
+  // before the agent can sign/print the contract.
+  if (contract.generatedDocumentId && !contract.generationApprovedAt) {
+    throw new HttpError(
+      403,
+      "Generated contract is awaiting admin approval — cannot sign yet"
+    );
   }
 
   contract.status = "SIGNED";
@@ -223,7 +385,107 @@ export async function approve(id: string, approverId: string) {
   contract.approvedBy = approverId as unknown as typeof contract.approvedBy;
   await contract.save();
 
-  events.emit("contract.signed", { contractId: contract._id.toString() });
+  // Per Review 1.1 §8: split the v1.1 single-event flow into two stages so the
+  // advance-pay-authorization handler can gate commission generation on AM
+  // authorization. Commissions fire when:
+  //   - AM authorizes early payment (advance_pay_auth.decided AUTHORIZED), OR
+  //   - installation is activated (resolves any pending/declined auth).
+  events.emit("contract.approved", { contractId: contract._id.toString() });
+  return contract;
+}
+
+/**
+ * Per Review 1.1 §1: agent generates contract PDF on the contract page.
+ * The PDF is persisted as a Document (kind=CONTRACT_DRAFT) and the contract is
+ * flagged as awaiting generation approval. Admin/AM must then call
+ * `approveGenerated()` before the agent can sign/print.
+ *
+ * Re-running this on a contract whose previous generation was already approved
+ * will reset the approval state — so admin must re-approve any new draft.
+ */
+export type GenerateInput = {
+  templateId: string;
+  values: Record<string, string>;
+  omitSections?: string[];
+  generatedBy: string;
+};
+
+const UPLOAD_ROOT = path.resolve(process.cwd(), "uploads");
+
+export async function generate(id: string, input: GenerateInput) {
+  const contract = await getById(id);
+  if (contract.status !== "DRAFT") {
+    throw new HttpError(
+      400,
+      `Cannot generate a contract PDF for a ${contract.status.toLowerCase()} contract`
+    );
+  }
+
+  const template = await ContractTemplate.findOne({
+    _id: input.templateId,
+    deletedAt: null,
+    active: true,
+  });
+  if (!template) throw new HttpError(400, "Template not found or inactive");
+
+  const text = templateService.render(
+    template.body,
+    input.values ?? {},
+    input.omitSections ?? []
+  );
+  const pdfBytes = await templateService.renderToPdf(
+    text,
+    `Contract ${contract._id.toString().slice(-8)}`
+  );
+
+  const dir = path.join(UPLOAD_ROOT, "Contract");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const filename = `${Date.now()}-generated-${contract._id.toString()}.pdf`;
+  const fullPath = path.join(dir, filename);
+  fs.writeFileSync(fullPath, pdfBytes);
+  const url = `/uploads/Contract/${filename}`;
+
+  const doc = await documentService.create({
+    ownerType: "Contract",
+    ownerId: contract._id.toString(),
+    kind: "CONTRACT_DRAFT",
+    url,
+    mimeType: "application/pdf",
+    sizeBytes: pdfBytes.byteLength,
+    uploadedBy: input.generatedBy,
+  });
+
+  contract.generatedDocumentId = doc._id as unknown as typeof contract.generatedDocumentId;
+  contract.generatedFromTemplateId =
+    template._id as unknown as typeof contract.generatedFromTemplateId;
+  contract.generationApprovedAt = null;
+  contract.generationApprovedBy = null;
+  await contract.save();
+
+  events.emit("contract.generation_requested", {
+    contractId: contract._id.toString(),
+  });
+
+  return { contract, document: doc };
+}
+
+export async function approveGenerated(id: string, approverId: string) {
+  const contract = await getById(id);
+  if (!contract.generatedDocumentId) {
+    throw new HttpError(400, "No generated contract to approve");
+  }
+  if (contract.generationApprovedAt) {
+    throw new HttpError(400, "Generated contract already approved");
+  }
+  contract.generationApprovedAt = new Date();
+  contract.generationApprovedBy =
+    approverId as unknown as typeof contract.generationApprovedBy;
+  await contract.save();
+
+  events.emit("contract.generation_approved", {
+    contractId: contract._id.toString(),
+    agentId: contract.agentId.toString(),
+  });
   return contract;
 }
 

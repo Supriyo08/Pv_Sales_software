@@ -8,6 +8,9 @@ import {
   ArrowRight,
   Upload,
   ShieldCheck,
+  PencilLine,
+  FileText,
+  FileCheck2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
@@ -15,15 +18,23 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Badge, StatusBadge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
+import { Modal } from "../components/ui/Modal";
+import { Input, Textarea, Select, Field } from "../components/ui/Input";
 import { formatCents, formatDate, formatDateTime } from "../lib/format";
 import { useRole } from "../store/auth";
 import type {
   Contract,
+  ContractEditRequest,
+  ContractPaymentMethod,
+  ContractTemplate,
   Customer,
   Installation,
   Commission,
   DocumentRecord,
   User,
+  Solution,
+  SolutionVersion,
+  InstallmentPlan,
 } from "../lib/api-types";
 
 const NEXT_INSTALL_STEPS: Record<string, string> = {
@@ -55,6 +66,26 @@ export function ContractDetail() {
     queryKey: ["user", contract?.agentId],
     queryFn: async () => (await api.get(`/users/${contract!.agentId}`)).data,
     enabled: !!contract?.agentId && (role === "ADMIN" || role === "AREA_MANAGER"),
+  });
+
+  const { data: version } = useQuery<SolutionVersion>({
+    queryKey: ["solution-version", contract?.solutionVersionId],
+    queryFn: async () =>
+      (await api.get(`/catalog/solution-versions/${contract!.solutionVersionId}`)).data,
+    enabled: !!contract?.solutionVersionId,
+  });
+
+  const { data: solution } = useQuery<Solution>({
+    queryKey: ["solution", version?.solutionId],
+    queryFn: async () => (await api.get(`/catalog/solutions/${version!.solutionId}`)).data,
+    enabled: !!version?.solutionId,
+  });
+
+  const { data: plan } = useQuery<InstallmentPlan>({
+    queryKey: ["installment-plan", contract?.installmentPlanId],
+    queryFn: async () =>
+      (await api.get(`/catalog/installment-plans/${contract!.installmentPlanId}`)).data,
+    enabled: !!contract?.installmentPlanId,
   });
 
   const { data: installations = [] } = useQuery<Installation[]>({
@@ -95,6 +126,113 @@ export function ContractDetail() {
     mutationFn: async () =>
       api.post(`/commissions/recalc/contract/${id}`, { reason: "manual recalc from UI" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["commissions"] }),
+  });
+
+  // Per Review 1.1 §1: edit-request workflow.
+  const { data: plans = [] } = useQuery<InstallmentPlan[]>({
+    queryKey: ["installment-plans", "active"],
+    queryFn: async () =>
+      (await api.get("/catalog/installment-plans", { params: { active: "true" } })).data,
+  });
+
+  const { data: editRequests = [] } = useQuery<ContractEditRequest[]>({
+    queryKey: ["contract-edit-requests", { contractId: id }],
+    queryFn: async () =>
+      (
+        await api.get("/contract-edit-requests", { params: { contractId: id } })
+      ).data,
+    enabled: !!id,
+  });
+
+  const pendingEdit = editRequests.find((r) => r.status === "PENDING");
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editAmount, setEditAmount] = useState<string>("");
+  const [editPaymentMethod, setEditPaymentMethod] = useState<ContractPaymentMethod | "">("");
+  const [editAdvance, setEditAdvance] = useState<string>("");
+  const [editPlanId, setEditPlanId] = useState<string>("");
+  const [editReason, setEditReason] = useState<string>("");
+
+  const submitEdit = useMutation({
+    mutationFn: async () => {
+      const changes: Record<string, unknown> = {};
+      if (editAmount && Number(editAmount) * 100 !== contract!.amountCents) {
+        changes.amountCents = Math.round(Number(editAmount) * 100);
+      }
+      if (editPaymentMethod && editPaymentMethod !== contract!.paymentMethod) {
+        changes.paymentMethod = editPaymentMethod;
+      }
+      if (
+        editAdvance &&
+        Math.round(Number(editAdvance) * 100) !== contract!.advanceCents
+      ) {
+        changes.advanceCents = Math.round(Number(editAdvance) * 100);
+      }
+      if (editPlanId !== "" && editPlanId !== (contract!.installmentPlanId ?? "")) {
+        changes.installmentPlanId = editPlanId === "__none__" ? null : editPlanId;
+      }
+      if (Object.keys(changes).length === 0) {
+        throw new Error("No changes detected");
+      }
+      return api.post(`/contracts/${id}/edit-requests`, {
+        changes,
+        reason: editReason,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contract-edit-requests"] });
+      setEditOpen(false);
+      setEditReason("");
+    },
+  });
+
+  const decideEdit = useMutation({
+    mutationFn: async (input: { id: string; action: "approve" | "reject"; note: string }) =>
+      api.post(`/contract-edit-requests/${input.id}/${input.action}`, { note: input.note }),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+
+  function openEditModal() {
+    if (!contract) return;
+    setEditAmount((contract.amountCents / 100).toFixed(2));
+    setEditPaymentMethod(contract.paymentMethod);
+    setEditAdvance((contract.advanceCents / 100).toFixed(2));
+    setEditPlanId(contract.installmentPlanId ?? "__none__");
+    setEditReason("");
+    setEditOpen(true);
+  }
+
+  // Per Review 1.1 §1: agent generates contract PDF; admin/AM approves before sign.
+  const { data: templates = [] } = useQuery<ContractTemplate[]>({
+    queryKey: ["templates", "active"],
+    queryFn: async () => (await api.get("/templates")).data,
+  });
+
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [selTemplateId, setSelTemplateId] = useState<string>("");
+  const [tplValues, setTplValues] = useState<Record<string, string>>({});
+
+  const selTemplate = templates.find((t) => t._id === selTemplateId);
+
+  const generate = useMutation({
+    mutationFn: async () => {
+      if (!selTemplateId) throw new Error("Pick a template");
+      return api.post(`/contracts/${id}/generate`, {
+        templateId: selTemplateId,
+        values: tplValues,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries();
+      setGenerateOpen(false);
+      setSelTemplateId("");
+      setTplValues({});
+    },
+  });
+
+  const approveGen = useMutation({
+    mutationFn: async () => api.post(`/contracts/${id}/approve-generated`),
+    onSuccess: () => qc.invalidateQueries(),
   });
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,8 +276,19 @@ export function ContractDetail() {
 
   if (!contract) return <p className="text-slate-500">Loading…</p>;
 
-  const canSign = contract.status === "DRAFT";
+  const generationPending =
+    !!contract.generatedDocumentId && !contract.generationApprovedAt;
+  const canSign =
+    contract.status === "DRAFT" && !generationPending;
   const canCancel = contract.status !== "CANCELLED" && (role === "ADMIN" || role === "AREA_MANAGER");
+  const canRequestEdit = contract.status !== "CANCELLED" && !pendingEdit;
+  const canDecideEdit = !!pendingEdit && (role === "ADMIN" || role === "AREA_MANAGER");
+  const canGenerate = contract.status === "DRAFT";
+  const canApproveGen =
+    generationPending && (role === "ADMIN" || role === "AREA_MANAGER");
+  const generatedDoc = scanDocs.find(
+    (d) => d._id === contract.generatedDocumentId
+  );
   const canUpload =
     contract.status === "SIGNED" &&
     contract.approvalRequired &&
@@ -172,10 +321,42 @@ export function ContractDetail() {
                 <Badge tone="amber">awaiting signed scan</Badge>
               )
             )}
+            {pendingEdit && <Badge tone="amber">edit requested</Badge>}
+            {generationPending && <Badge tone="amber">generation pending</Badge>}
+            {contract.generationApprovedAt && (
+              <Badge tone="green">generation approved</Badge>
+            )}
           </span>
         }
         action={
           <div className="flex gap-2">
+            {canRequestEdit && (
+              <Button
+                variant="outline"
+                onClick={openEditModal}
+                icon={<PencilLine className="size-4" />}
+              >
+                Request edit
+              </Button>
+            )}
+            {canGenerate && (
+              <Button
+                variant="outline"
+                onClick={() => setGenerateOpen(true)}
+                icon={<FileText className="size-4" />}
+              >
+                {contract.generatedDocumentId ? "Re-generate PDF" : "Generate PDF"}
+              </Button>
+            )}
+            {canApproveGen && (
+              <Button
+                onClick={() => approveGen.mutate()}
+                loading={approveGen.isPending}
+                icon={<FileCheck2 className="size-4" />}
+              >
+                Approve generated PDF
+              </Button>
+            )}
             {canSign && (
               <Button
                 onClick={() => sign.mutate()}
@@ -207,6 +388,120 @@ export function ContractDetail() {
           </div>
         }
       />
+
+      {generationPending && (
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <FileText className="size-5 text-amber-700 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-semibold text-amber-900 mb-1">
+                Generated PDF awaiting approval
+              </div>
+              <p className="text-sm text-amber-800 mb-3">
+                Admin or area manager must review the generated contract before you
+                can print or sign it. Once approved, you'll see a "Sign" action.
+              </p>
+              {generatedDoc && (
+                <a
+                  href={`http://localhost:4000${generatedDoc.url}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-amber-900 underline"
+                >
+                  <FileText className="size-4" /> View generated PDF
+                </a>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {contract.generationApprovedAt && contract.status === "DRAFT" && (
+        <Card className="mb-6 border-green-200 bg-green-50">
+          <div className="flex items-start gap-3">
+            <FileCheck2 className="size-5 text-green-700 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-semibold text-green-900 mb-1">
+                Generated PDF approved — ready to sign
+              </div>
+              {generatedDoc && (
+                <a
+                  href={`http://localhost:4000${generatedDoc.url}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-green-900 underline"
+                >
+                  <FileText className="size-4" /> Print or download approved PDF
+                </a>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {pendingEdit && (
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <PencilLine className="size-5 text-amber-700 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-semibold text-amber-900 mb-1">
+                Pending edit request
+              </div>
+              <p className="text-sm text-amber-800 mb-2">
+                Submitted {formatDateTime(pendingEdit.createdAt)}.
+                {pendingEdit.reason ? ` Reason: ${pendingEdit.reason}` : ""}
+              </p>
+              <ul className="text-sm text-amber-900 mb-3 list-disc pl-5">
+                {Object.entries(pendingEdit.changes).map(([k, v]) => (
+                  <li key={k}>
+                    <code className="font-mono text-xs">{k}</code>
+                    {": "}
+                    <strong>
+                      {k === "amountCents" || k === "advanceCents"
+                        ? formatCents(Number(v) || 0, contract.currency)
+                        : String(v)}
+                    </strong>
+                  </li>
+                ))}
+              </ul>
+              {canDecideEdit && (
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      decideEdit.mutate({
+                        id: pendingEdit._id,
+                        action: "approve",
+                        note: "approved from contract detail",
+                      })
+                    }
+                    loading={decideEdit.isPending}
+                    icon={<CheckCircle2 className="size-3.5" />}
+                  >
+                    Approve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={() => {
+                      const note = window.prompt("Reason for rejection?") ?? "";
+                      decideEdit.mutate({
+                        id: pendingEdit._id,
+                        action: "reject",
+                        note,
+                      });
+                    }}
+                    loading={decideEdit.isPending}
+                    icon={<XCircle className="size-3.5" />}
+                  >
+                    Reject
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {canUpload && (
         <Card className="mb-6 border-amber-200 bg-amber-50">
@@ -259,7 +554,7 @@ export function ContractDetail() {
         </Card>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-3">
         <Card>
           <h3 className="font-semibold mb-4">Details</h3>
           <dl className="space-y-3 text-sm">
@@ -284,6 +579,74 @@ export function ContractDetail() {
             <Row k="Cancelled">{formatDateTime(contract.cancelledAt)}</Row>
             {contract.cancellationReason && (
               <Row k="Cancel reason">{contract.cancellationReason}</Row>
+            )}
+          </dl>
+        </Card>
+
+        <Card>
+          <h3 className="font-semibold mb-4">Solution &amp; payment</h3>
+          <dl className="space-y-3 text-sm">
+            <Row k="Solution">
+              {solution ? (
+                solution.name
+              ) : (
+                <span className="text-slate-400">loading…</span>
+              )}
+            </Row>
+            <Row k="Version">
+              {version ? (
+                <span>
+                  {formatDate(version.validFrom)}
+                  {version.validTo ? ` → ${formatDate(version.validTo)}` : " → present"}
+                </span>
+              ) : (
+                "—"
+              )}
+            </Row>
+            {version?.changeReason && (
+              <Row k="Change reason">
+                <span className="text-slate-700">{version.changeReason}</span>
+              </Row>
+            )}
+            <Row k="Base price">
+              {version ? formatCents(version.basePriceCents, version.currency) : "—"}
+            </Row>
+            <Row k="Agent commission">
+              {version ? `${(version.agentBp / 100).toFixed(2)}%` : "—"}
+            </Row>
+            <Row k="Manager override">
+              {version ? `${(version.managerBp / 100).toFixed(2)}%` : "—"}
+            </Row>
+            <Row k="Payment method">
+              <Badge tone="neutral">{contract.paymentMethod.replace(/_/g, " ")}</Badge>
+            </Row>
+            {contract.paymentMethod !== "ONE_TIME" && (
+              <>
+                <Row k="Plan">
+                  {plan ? (
+                    <span>
+                      {plan.name} · {plan.months}&nbsp;mo
+                    </span>
+                  ) : contract.installmentPlanId ? (
+                    <span className="text-slate-400">loading…</span>
+                  ) : (
+                    "—"
+                  )}
+                </Row>
+                {contract.paymentMethod === "ADVANCE_INSTALLMENTS" && (
+                  <Row k="Advance">
+                    {formatCents(contract.advanceCents, contract.currency)}
+                  </Row>
+                )}
+                {contract.installmentAmountCents !== null && (
+                  <Row k="Per installment">
+                    {formatCents(contract.installmentAmountCents, contract.currency)}
+                    {contract.installmentMonths && (
+                      <span className="text-slate-500"> · {contract.installmentMonths} months</span>
+                    )}
+                  </Row>
+                )}
+              </>
             )}
           </dl>
         </Card>
@@ -377,6 +740,162 @@ export function ContractDetail() {
           </Table>
         )}
       </Card>
+
+      <Modal
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        title="Request a contract edit"
+        description="Admin or area manager will review and apply your changes. Only fields you modify are sent."
+        size="lg"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => submitEdit.mutate()} loading={submitEdit.isPending}>
+              Submit request
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {submitEdit.isError && (
+            <p className="text-sm text-red-600">
+              {(submitEdit.error as { response?: { data?: { error?: string } }; message?: string })
+                ?.response?.data?.error ?? (submitEdit.error as Error).message}
+            </p>
+          )}
+          <Field label={`Amount (${contract.currency})`}>
+            <Input
+              type="number"
+              step="0.01"
+              value={editAmount}
+              onChange={(e) => setEditAmount(e.target.value)}
+            />
+          </Field>
+          <Field label="Payment method">
+            <Select
+              value={editPaymentMethod}
+              onChange={(e) =>
+                setEditPaymentMethod(e.target.value as ContractPaymentMethod)
+              }
+            >
+              <option value="ONE_TIME">One-time</option>
+              <option value="ADVANCE_INSTALLMENTS">Advance + installments</option>
+              <option value="FULL_INSTALLMENTS">Full installments</option>
+            </Select>
+          </Field>
+          {editPaymentMethod !== "ONE_TIME" && (
+            <Field label="Installment plan">
+              <Select value={editPlanId} onChange={(e) => setEditPlanId(e.target.value)}>
+                <option value="__none__">— select —</option>
+                {plans
+                  .filter((p) => p.active)
+                  .map((p) => (
+                    <option key={p._id} value={p._id}>
+                      {p.name} · {p.months} months
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+          )}
+          {editPaymentMethod === "ADVANCE_INSTALLMENTS" && (
+            <Field label={`Advance (${contract.currency})`}>
+              <Input
+                type="number"
+                step="0.01"
+                value={editAdvance}
+                onChange={(e) => setEditAdvance(e.target.value)}
+              />
+            </Field>
+          )}
+          <Field label="Reason for the change">
+            <Textarea
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              placeholder="Why this edit is needed (visible to admin)"
+              rows={3}
+            />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={generateOpen}
+        onOpenChange={setGenerateOpen}
+        title="Generate contract PDF"
+        description="Pick a template and fill the placeholders. Admin will review the generated PDF before you can print or sign."
+        size="lg"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setGenerateOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => generate.mutate()}
+              loading={generate.isPending}
+              disabled={!selTemplateId}
+            >
+              Generate
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {generate.isError && (
+            <p className="text-sm text-red-600">
+              {(generate.error as { response?: { data?: { error?: string } }; message?: string })
+                ?.response?.data?.error ?? (generate.error as Error).message}
+            </p>
+          )}
+          <Field label="Template" required>
+            <Select
+              value={selTemplateId}
+              onChange={(e) => {
+                setSelTemplateId(e.target.value);
+                setTplValues({});
+              }}
+            >
+              <option value="">— select —</option>
+              {templates
+                .filter((t) => t.active)
+                .map((t) => (
+                  <option key={t._id} value={t._id}>
+                    {t.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+
+          {selTemplate && selTemplate.analysis.placeholders.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Placeholders ({selTemplate.analysis.placeholders.length})
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {selTemplate.analysis.placeholders.map((p) => (
+                  <Field key={p.tag} label={`@${p.tag}`}>
+                    <Input
+                      value={tplValues[p.tag] ?? ""}
+                      onChange={(e) =>
+                        setTplValues((s) => ({ ...s, [p.tag]: e.target.value }))
+                      }
+                      placeholder={`value for @${p.tag}`}
+                    />
+                  </Field>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {selTemplate &&
+            selTemplate.analysis.placeholders.length === 0 && (
+              <p className="text-sm text-slate-500">
+                This template has no placeholders. Click Generate to render it as-is.
+              </p>
+            )}
+        </div>
+      </Modal>
     </div>
   );
 }

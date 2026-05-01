@@ -6,6 +6,13 @@ const templateSchema = new Schema(
     description: { type: String, default: "" },
     body: { type: String, required: true },
     active: { type: Boolean, default: true, index: true },
+    // Per Review 1.1 §2: templates can be assigned to specific solutions.
+    // Empty array = applies to all solutions.
+    solutionIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: "Solution" }],
+      default: [],
+      index: true,
+    },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     deletedAt: { type: Date, default: null },
   },

@@ -25,6 +25,40 @@ const customerSchema = new Schema(
     // Per Review 1.0 §8: admins can customise the New Customer form. Free-form
     // key/value bag for any non-builtin fields the form schema declares.
     customFields: { type: Schema.Types.Mixed, default: {} },
+    // Per Review 1.1 §6 clarifications: when admin reassigns a customer/lead,
+    // they may configure how future commissions are split between agents and
+    // which AM gets the bonus count + override. Null = no split (single agent
+    // flow as before). agentSplits sum must equal 10000 bp (100%).
+    commissionSplit: {
+      type: new Schema(
+        {
+          agentSplits: [
+            {
+              _id: false,
+              userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+              bp: { type: Number, min: 0, max: 10_000, required: true },
+            },
+          ],
+          bonusCountBeneficiaryId: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+            default: null,
+          },
+          managerBonusBeneficiaryId: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+            default: null,
+          },
+          managerOverrideBeneficiaryId: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+            default: null,
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true }

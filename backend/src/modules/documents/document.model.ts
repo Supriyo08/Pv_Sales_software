@@ -4,6 +4,8 @@ export const DOCUMENT_OWNER_TYPES = ["Customer", "Contract", "Installation", "Us
 export const DOCUMENT_KINDS = [
   "ID_CARD",
   "CONTRACT_PDF",
+  // Per Review 1.1 §1: agent-generated draft awaiting admin approval before sign/print.
+  "CONTRACT_DRAFT",
   "BILL",
   "PERMIT",
   "PROOF_OF_PAYMENT",

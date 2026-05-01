@@ -60,13 +60,103 @@ const createInstallmentPlanSchema = z.object({
   surchargeBp: z.number().int().min(0).max(10_000).optional(),
   description: z.string().optional(),
   active: z.boolean().optional(),
+  // Per Review 1.1 §4.
+  solutionIds: z.array(objectId).optional(),
+  advanceMinCents: z.number().int().min(0).nullish(),
+  advanceMaxCents: z.number().int().min(0).nullish(),
 });
 
 const updateInstallmentPlanSchema = createInstallmentPlanSchema.partial();
 
-export const listSolutions: RequestHandler = async (_req, res, next) => {
+export const listSolutions: RequestHandler = async (req, res, next) => {
   try {
-    res.json(await solutions.listSolutions());
+    const enriched = req.query.enriched === "true";
+    const includeArchived = req.query.includeArchived === "true";
+    if (enriched) {
+      res.json(await solutions.listSolutionsEnriched({ includeArchived }));
+    } else {
+      res.json(await solutions.listSolutions({ includeArchived }));
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.1 §3: deactivate / activate / archive a whole solution.
+export const setSolutionActive: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const active = req.body?.active === true;
+    const s = await solutions.setActive(req.params.id!, active);
+    void audit.log({
+      actorId: req.user.sub,
+      action: active ? "solution.activate" : "solution.deactivate",
+      targetType: "Solution",
+      targetId: s._id.toString(),
+      after: s.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(s);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const archiveSolution: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const s = await solutions.archive(req.params.id!);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "solution.archive",
+      targetType: "Solution",
+      targetId: s._id.toString(),
+      after: s.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(s);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const unarchiveSolution: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const s = await solutions.unarchive(req.params.id!);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "solution.unarchive",
+      targetType: "Solution",
+      targetId: s._id.toString(),
+      after: s.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(s);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getSolution: RequestHandler = async (req, res, next) => {
+  try {
+    res.json(await solutions.getSolution(req.params.id!));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getVersion: RequestHandler = async (req, res, next) => {
+  try {
+    res.json(await solutions.getVersion(req.params.id!));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getInstallmentPlan: RequestHandler = async (req, res, next) => {
+  try {
+    res.json(await installmentPlans.getById(req.params.id!));
   } catch (err) {
     next(err);
   }
@@ -149,7 +239,8 @@ export const updateVersion: RequestHandler = async (req, res, next) => {
 export const listInstallmentPlans: RequestHandler = async (req, res, next) => {
   try {
     const activeOnly = req.query.active === "true";
-    res.json(await installmentPlans.list({ activeOnly }));
+    const solutionId = typeof req.query.solutionId === "string" ? req.query.solutionId : undefined;
+    res.json(await installmentPlans.list({ activeOnly, solutionId }));
   } catch (err) {
     next(err);
   }

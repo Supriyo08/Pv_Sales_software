@@ -1,16 +1,24 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Trash2, UserPlus, Pencil, ExternalLink } from "lucide-react";
+import {
+  PowerOff,
+  Power,
+  UserPlus,
+  Pencil,
+  ExternalLink,
+  KeyRound,
+} from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardHeader } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Field, Input, Select } from "../components/ui/Input";
-import { StatusBadge } from "../components/ui/Badge";
+import { Badge, StatusBadge } from "../components/ui/Badge";
 import { Avatar } from "../components/ui/Avatar";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
+import { Modal } from "../components/ui/Modal";
 import { formatDate } from "../lib/format";
 import type { User, Territory } from "../lib/api-types";
 
@@ -39,9 +47,19 @@ export function UsersAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
 
+  const [includeInactive, setIncludeInactive] = useState(false);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetPwd, setResetPwd] = useState("");
+  const [resetError, setResetError] = useState<string | null>(null);
+
   const { data: users = [] } = useQuery<User[]>({
-    queryKey: ["users"],
-    queryFn: async () => (await api.get("/users")).data,
+    queryKey: ["users", { includeInactive }],
+    queryFn: async () =>
+      (
+        await api.get("/users", {
+          params: { includeInactive: includeInactive ? "true" : undefined },
+        })
+      ).data,
   });
 
   const { data: territories = [] } = useQuery<Territory[]>({
@@ -109,6 +127,23 @@ export function UsersAdmin() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
 
+  const reactivate = useMutation({
+    mutationFn: async (id: string) => api.post(`/users/${id}/reactivate`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+
+  const resetPassword = useMutation({
+    mutationFn: async (input: { id: string; newPassword: string }) =>
+      api.post(`/users/${input.id}/reset-password`, { newPassword: input.newPassword }),
+    onSuccess: () => {
+      setResetTarget(null);
+      setResetPwd("");
+      setResetError(null);
+    },
+    onError: (err: { response?: { data?: { error?: string } } }) =>
+      setResetError(err?.response?.data?.error ?? "Failed"),
+  });
+
   const startEdit = (u: User) => {
     setEditing({
       userId: u._id,
@@ -124,13 +159,24 @@ export function UsersAdmin() {
     <div className="space-y-6">
       <PageHeader
         title="Users"
-        description="Create, edit roles, soft-delete users. Click any user to see their performance + payments."
+        description="Create, edit, deactivate, reset passwords. Click any user to see their performance + payments."
         action={
-          !showForm ? (
-            <Button onClick={() => setShowForm(true)} icon={<UserPlus className="size-4" />}>
-              New user
-            </Button>
-          ) : null
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={includeInactive}
+                onChange={(e) => setIncludeInactive(e.target.checked)}
+                className="size-3.5 rounded border-slate-300"
+              />
+              Show inactive
+            </label>
+            {!showForm && (
+              <Button onClick={() => setShowForm(true)} icon={<UserPlus className="size-4" />}>
+                New user
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -322,19 +368,22 @@ export function UsersAdmin() {
               <Th></Th>
             </THead>
             <TBody>
-              {users.map((u) => (
-                <Tr key={u._id}>
+              {users.map((u) => {
+                const inactive = !!u.deletedAt;
+                return (
+                <Tr key={u._id} className={inactive ? "opacity-60" : ""}>
                   <Td>
                     <div className="flex items-center gap-3">
                       <Avatar name={u.fullName} size="sm" />
                       <div>
-                        <div className="font-medium text-slate-900">
+                        <div className="font-medium text-slate-900 flex items-center gap-2">
                           <Link
                             to={`/admin/users/${u._id}`}
                             className="hover:text-brand-600"
                           >
                             {u.fullName}
                           </Link>
+                          {inactive && <Badge tone="neutral">inactive</Badge>}
                         </div>
                         <div className="text-xs text-slate-500">{u.email}</div>
                       </div>
@@ -359,7 +408,7 @@ export function UsersAdmin() {
                   </Td>
                   <Td className="text-slate-500">{formatDate(u.createdAt)}</Td>
                   <Td>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap">
                       <Button
                         size="sm"
                         variant="ghost"
@@ -368,34 +417,106 @@ export function UsersAdmin() {
                       >
                         <Link to={`/admin/users/${u._id}`}>Profile</Link>
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<Pencil className="size-3.5 text-slate-500" />}
-                        onClick={() => startEdit(u)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<Trash2 className="size-3.5 text-red-500" />}
-                        onClick={() => {
-                          if (confirm(`Soft-delete ${u.fullName}?`)) {
-                            remove.mutate(u._id);
-                          }
-                        }}
-                      >
-                        <span className="text-red-600">Delete</span>
-                      </Button>
+                      {!inactive && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Pencil className="size-3.5 text-slate-500" />}
+                          onClick={() => startEdit(u)}
+                        >
+                          Edit
+                        </Button>
+                      )}
+                      {!inactive && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<KeyRound className="size-3.5 text-slate-600" />}
+                          onClick={() => {
+                            setResetTarget(u);
+                            setResetPwd("");
+                            setResetError(null);
+                          }}
+                        >
+                          Reset password
+                        </Button>
+                      )}
+                      {inactive ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Power className="size-3.5 text-emerald-600" />}
+                          onClick={() => reactivate.mutate(u._id)}
+                        >
+                          <span className="text-emerald-700">Reactivate</span>
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<PowerOff className="size-3.5 text-red-500" />}
+                          onClick={() => {
+                            if (confirm(`Deactivate ${u.fullName}? They will not be able to log in.`)) {
+                              remove.mutate(u._id);
+                            }
+                          }}
+                        >
+                          <span className="text-red-600">Deactivate</span>
+                        </Button>
+                      )}
                     </div>
                   </Td>
                 </Tr>
-              ))}
+                );
+              })}
             </TBody>
           </Table>
         )}
       </Card>
+
+      <Modal
+        open={!!resetTarget}
+        onOpenChange={(o) => {
+          if (!o) {
+            setResetTarget(null);
+            setResetPwd("");
+            setResetError(null);
+          }
+        }}
+        title={`Reset password for ${resetTarget?.fullName ?? ""}`}
+        description="The user will be logged out of all sessions and must use the new password to sign back in."
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setResetTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                resetTarget &&
+                resetPassword.mutate({ id: resetTarget._id, newPassword: resetPwd })
+              }
+              loading={resetPassword.isPending}
+              disabled={resetPwd.length < 8}
+            >
+              Reset password
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          {resetError && (
+            <p className="text-sm text-red-600">{resetError}</p>
+          )}
+          <Field label="New password" required hint="At least 8 characters.">
+            <Input
+              type="password"
+              value={resetPwd}
+              onChange={(e) => setResetPwd(e.target.value)}
+              autoFocus
+            />
+          </Field>
+        </div>
+      </Modal>
     </div>
   );
 }

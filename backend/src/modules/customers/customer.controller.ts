@@ -33,8 +33,24 @@ const createSchema = z.object({
 
 const updateSchema = createSchema.partial();
 
+const commissionSplitSchema = z.object({
+  agentSplits: z
+    .array(
+      z.object({
+        userId: objectId,
+        bp: z.number().int().min(0).max(10_000),
+      })
+    )
+    .min(1),
+  bonusCountBeneficiaryId: objectId.nullish(),
+  managerBonusBeneficiaryId: objectId.nullish(),
+  managerOverrideBeneficiaryId: objectId.nullish(),
+});
+
 const reassignSchema = z.object({
   agentId: objectId.nullable(),
+  // Per Review 1.1 §6: optional split — null = clear, omitted = unchanged.
+  commissionSplit: commissionSplitSchema.nullable().optional(),
 });
 
 export const list: RequestHandler = async (req, res, next) => {
@@ -133,7 +149,14 @@ export const reassign: RequestHandler = async (req, res, next) => {
     const body = reassignSchema.parse(req.body);
     const id = req.params.id!;
     const before = (await customerService.getById(id, scope)).toObject();
-    const updated = await customerService.reassign(id, body.agentId, scope);
+    const updated = await customerService.reassign(
+      id,
+      body.agentId,
+      scope,
+      body.commissionSplit === undefined
+        ? undefined
+        : (body.commissionSplit as Parameters<typeof customerService.reassign>[3])
+    );
     void audit.log({
       actorId: req.user.sub,
       action: "customer.reassign",
@@ -141,7 +164,10 @@ export const reassign: RequestHandler = async (req, res, next) => {
       targetId: id,
       before,
       after: updated.toObject(),
-      metadata: { newAgentId: body.agentId },
+      metadata: {
+        newAgentId: body.agentId,
+        commissionSplit: body.commissionSplit ?? null,
+      },
       requestId: req.requestId,
     });
     res.json(updated);

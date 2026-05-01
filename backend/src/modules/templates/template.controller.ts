@@ -1,14 +1,22 @@
-import type { RequestHandler } from "express";
+import type { RequestHandler, Request } from "express";
+import path from "path";
+import multer from "multer";
 import { z } from "zod";
+import { Types } from "mongoose";
 import * as templateService from "./template.service";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
+
+const objectId = z
+  .string()
+  .refine((v) => Types.ObjectId.isValid(v), { message: "Invalid ObjectId" });
 
 const createSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   body: z.string().min(1),
   active: z.boolean().optional(),
+  solutionIds: z.array(objectId).optional(),
 });
 
 const updateSchema = createSchema.partial();
@@ -96,6 +104,85 @@ export const remove: RequestHandler = async (req, res, next) => {
       requestId: req.requestId,
     });
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.1 §2: upload a .html / .docx template from desktop. Files are
+// processed in-memory (small enough — .docx caps around 10 MB) and converted
+// to HTML; we never write the source file to disk because the body is what
+// matters once parsed.
+const ACCEPTED_TEMPLATE_TYPES = [
+  ".html",
+  ".htm",
+  ".docx",
+  ".txt",
+  "text/html",
+  "text/plain",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+];
+
+const uploadStorage = multer.memoryStorage();
+export const uploadMiddleware = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ACCEPTED_TEMPLATE_TYPES.includes(ext) || ACCEPTED_TEMPLATE_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new HttpError(400, "Only .html, .htm, .docx, .txt are accepted"));
+    }
+  },
+}).single("file");
+
+const uploadFieldsSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  // Comes through as a JSON string in multipart; controller parses.
+  solutionIds: z.string().optional(),
+});
+
+type UploadRequest = Request & { file?: Express.Multer.File };
+
+export const upload: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const file = (req as UploadRequest).file;
+    if (!file) throw new HttpError(400, "file is required");
+
+    const fields = uploadFieldsSchema.parse(req.body);
+    let solutionIds: string[] | undefined;
+    if (fields.solutionIds) {
+      try {
+        const arr = JSON.parse(fields.solutionIds);
+        if (!Array.isArray(arr)) throw new Error();
+        solutionIds = arr.filter((v) => typeof v === "string");
+      } catch {
+        throw new HttpError(400, "solutionIds must be a JSON array of ObjectIds");
+      }
+    }
+
+    const t = await templateService.createFromUpload({
+      filename: file.originalname,
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+      name: fields.name,
+      description: fields.description,
+      solutionIds,
+      createdBy: req.user.sub,
+    });
+    void audit.log({
+      actorId: req.user.sub,
+      action: "template.upload",
+      targetType: "ContractTemplate",
+      targetId: t._id.toString(),
+      after: t.toObject(),
+      metadata: { filename: file.originalname, mimeType: file.mimetype },
+      requestId: req.requestId,
+    });
+    res.status(201).json({ ...t.toObject(), analysis: templateService.analyze(t.body) });
   } catch (err) {
     next(err);
   }

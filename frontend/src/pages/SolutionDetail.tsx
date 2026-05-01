@@ -27,10 +27,9 @@ export function SolutionDetail() {
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const { data: solution } = useQuery<Solution | undefined>({
-    queryKey: ["solutions", "all"],
-    queryFn: async () => (await api.get("/catalog/solutions")).data,
-    select: (all) => (all as unknown as Solution[]).find((s) => s._id === id),
+  const { data: solution } = useQuery<Solution>({
+    queryKey: ["solution", id],
+    queryFn: async () => (await api.get(`/catalog/solutions/${id}`)).data,
     enabled: !!id,
   });
 
@@ -39,6 +38,16 @@ export function SolutionDetail() {
     queryFn: async () => (await api.get(`/catalog/solutions/${id}/versions`)).data,
     enabled: !!id,
   });
+
+  // Per Review 1.1 §3 + §3 troubleshooting: prominently surface the change reason
+  // of the currently-active version so admins immediately see "why did pricing change".
+  const now = Date.now();
+  const activeVersion = versions.find(
+    (v) =>
+      v.active &&
+      new Date(v.validFrom).getTime() <= now &&
+      (!v.validTo || new Date(v.validTo).getTime() > now)
+  );
 
   const createVersion = useMutation({
     mutationFn: async () =>
@@ -86,6 +95,42 @@ export function SolutionDetail() {
           ) : null
         }
       />
+
+      {activeVersion && (
+        <Card className="mb-6 border-brand-200 bg-brand-50/40">
+          <div className="flex items-start gap-3">
+            <div className="size-8 rounded-full bg-brand-100 grid place-items-center text-brand-700 text-sm font-semibold shrink-0">
+              v
+            </div>
+            <div className="flex-1 text-sm">
+              <div className="font-semibold text-slate-900 mb-0.5">
+                Active version reason
+              </div>
+              <div className="text-slate-700">
+                {activeVersion.changeReason || (
+                  <span className="text-slate-400">— no reason recorded —</span>
+                )}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Active since {new Date(activeVersion.validFrom).toLocaleDateString()}
+                {activeVersion.boundToUserIds.length +
+                  activeVersion.boundToTerritoryIds.length +
+                  activeVersion.boundToCustomerIds.length >
+                  0 && (
+                  <>
+                    {" "}
+                    · bound to{" "}
+                    {activeVersion.boundToUserIds.length +
+                      activeVersion.boundToTerritoryIds.length +
+                      activeVersion.boundToCustomerIds.length}{" "}
+                    target(s) — see "Inventory control" in the version table.
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {showForm && (
         <Card className="mb-6">

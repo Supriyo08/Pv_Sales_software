@@ -6,17 +6,22 @@ import { Contract } from "../contracts/contract.model";
 import { Commission } from "../commissions/commission.model";
 import { Payment } from "../payments/payment.model";
 import { Bonus } from "../bonuses/bonus.model";
+import { revokeAllRefreshTokens } from "../auth/auth.service";
 import { HttpError } from "../../middleware/error";
 import { ensureNoCycle } from "../../utils/hierarchy";
 
-export async function getById(id: string) {
-  const user = await User.findOne({ _id: id, deletedAt: null }).select("-passwordHash");
+export async function getById(id: string, opts: { includeInactive?: boolean } = {}) {
+  const q: Record<string, unknown> = { _id: id };
+  if (!opts.includeInactive) q.deletedAt = null;
+  const user = await User.findOne(q).select("-passwordHash");
   if (!user) throw new HttpError(404, "User not found");
   return user;
 }
 
-export async function list() {
-  return User.find({ deletedAt: null }).select("-passwordHash").sort({ createdAt: -1 });
+export async function list(opts: { includeInactive?: boolean } = {}) {
+  const q: Record<string, unknown> = {};
+  if (!opts.includeInactive) q.deletedAt = null;
+  return User.find(q).select("-passwordHash").sort({ createdAt: -1 });
 }
 
 /**
@@ -163,6 +168,48 @@ export async function softDelete(id: string) {
     { new: true }
   );
   if (!result) throw new HttpError(404, "User not found");
+  // Per Review 1.1 §5: deactivating a user must invalidate their sessions so
+  // they can't keep using the app via a still-valid refresh token.
+  await revokeAllRefreshTokens(id);
+  return result;
+}
+
+/**
+ * Per Review 1.1 §5: admin can re-activate a previously deactivated user.
+ * Hierarchy is re-validated because the manager/territory may have changed
+ * while the user was offline.
+ */
+export async function reactivate(id: string) {
+  const user = await User.findById(id);
+  if (!user) throw new HttpError(404, "User not found");
+  if (!user.deletedAt) return user;
+
+  // Re-verify the manager link is still sound (manager may have been deleted).
+  await validateHierarchy(id, user.role as UserRole, user.managerId?.toString() ?? null);
+
+  user.deletedAt = null;
+  await user.save();
+  return User.findById(id).select("-passwordHash");
+}
+
+/**
+ * Per Review 1.1 §5: admin sets a new password for any user (e.g. agent forgot
+ * their credentials). Hashes via bcrypt and revokes any active refresh tokens
+ * so the user has to log in fresh.
+ */
+export async function adminResetPassword(id: string, newPassword: string) {
+  if (newPassword.length < 8) {
+    throw new HttpError(400, "Password must be at least 8 characters");
+  }
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  const result = await User.findOneAndUpdate(
+    { _id: id, deletedAt: null },
+    { passwordHash },
+    { new: true }
+  ).select("-passwordHash");
+  if (!result) throw new HttpError(404, "User not found");
+  await revokeAllRefreshTokens(id);
+  return result;
 }
 
 async function validateHierarchy(

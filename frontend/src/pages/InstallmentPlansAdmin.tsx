@@ -9,8 +9,8 @@ import { Field, Input } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
-import { formatBp, formatDate } from "../lib/format";
-import type { InstallmentPlan } from "../lib/api-types";
+import { formatBp, formatCents } from "../lib/format";
+import type { InstallmentPlan, Solution } from "../lib/api-types";
 
 export function InstallmentPlansAdmin() {
   const qc = useQueryClient();
@@ -21,12 +21,20 @@ export function InstallmentPlansAdmin() {
     surchargePct: "0",
     description: "",
     active: true,
+    solutionIds: [] as string[],
+    advanceMin: "",
+    advanceMax: "",
   });
   const [error, setError] = useState<string | null>(null);
 
   const { data: plans = [] } = useQuery<InstallmentPlan[]>({
     queryKey: ["installment-plans"],
     queryFn: async () => (await api.get("/catalog/installment-plans")).data,
+  });
+
+  const { data: solutions = [] } = useQuery<Solution[]>({
+    queryKey: ["solutions"],
+    queryFn: async () => (await api.get("/catalog/solutions")).data,
   });
 
   const create = useMutation({
@@ -37,16 +45,37 @@ export function InstallmentPlansAdmin() {
         surchargeBp: Math.round(parseFloat(form.surchargePct) * 100),
         description: form.description,
         active: form.active,
+        solutionIds: form.solutionIds,
+        advanceMinCents: form.advanceMin ? Math.round(parseFloat(form.advanceMin) * 100) : null,
+        advanceMaxCents: form.advanceMax ? Math.round(parseFloat(form.advanceMax) * 100) : null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["installment-plans"] });
       setShowForm(false);
-      setForm({ name: "", months: "36", surchargePct: "0", description: "", active: true });
+      setForm({
+        name: "",
+        months: "36",
+        surchargePct: "0",
+        description: "",
+        active: true,
+        solutionIds: [],
+        advanceMin: "",
+        advanceMax: "",
+      });
       setError(null);
     },
     onError: (err: { response?: { data?: { error?: string } } }) =>
       setError(err?.response?.data?.error ?? "Failed"),
   });
+
+  const toggleSolution = (id: string) => {
+    setForm((s) => ({
+      ...s,
+      solutionIds: s.solutionIds.includes(id)
+        ? s.solutionIds.filter((x) => x !== id)
+        : [...s.solutionIds, id],
+    }));
+  };
 
   const toggleActive = useMutation({
     mutationFn: async (p: InstallmentPlan) =>
@@ -119,6 +148,59 @@ export function InstallmentPlansAdmin() {
                 Selectable by agents
               </label>
             </Field>
+            <Field
+              label="Advance min (EUR, optional)"
+              hint="ADVANCE_INSTALLMENTS only — agent's advance payment lower bound."
+            >
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.advanceMin}
+                onChange={(e) => setForm({ ...form, advanceMin: e.target.value })}
+              />
+            </Field>
+            <Field
+              label="Advance max (EUR, optional)"
+              hint="ADVANCE_INSTALLMENTS only — agent's advance payment upper bound."
+            >
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.advanceMax}
+                onChange={(e) => setForm({ ...form, advanceMax: e.target.value })}
+              />
+            </Field>
+            <div className="col-span-2">
+              <Field
+                label="Restrict to solutions"
+                hint="Empty = available to all solutions. Otherwise only listed solutions show this plan."
+              >
+                <div className="flex flex-wrap gap-2">
+                  {solutions.length === 0 && (
+                    <span className="text-xs text-slate-500">No solutions defined.</span>
+                  )}
+                  {solutions.map((s) => {
+                    const on = form.solutionIds.includes(s._id);
+                    return (
+                      <button
+                        key={s._id}
+                        type="button"
+                        onClick={() => toggleSolution(s._id)}
+                        className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                          on
+                            ? "bg-brand-50 border-brand-300 text-brand-700"
+                            : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                        }`}
+                      >
+                        {s.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+            </div>
             <div className="col-span-2">
               <Field label="Description">
                 <Input
@@ -158,8 +240,9 @@ export function InstallmentPlansAdmin() {
               <Th>Name</Th>
               <Th className="text-right">Months</Th>
               <Th className="text-right">Surcharge</Th>
+              <Th>Solutions</Th>
+              <Th>Advance range</Th>
               <Th>Status</Th>
-              <Th>Created</Th>
               <Th></Th>
             </THead>
             <TBody>
@@ -175,6 +258,40 @@ export function InstallmentPlansAdmin() {
                   <Td className="text-right font-mono text-xs">
                     {formatBp(p.surchargeBp)}
                   </Td>
+                  <Td className="text-xs">
+                    {!p.solutionIds || p.solutionIds.length === 0 ? (
+                      <span className="text-slate-400">all</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {p.solutionIds.slice(0, 2).map((sid) => {
+                          const s = solutions.find((x) => x._id === sid);
+                          return (
+                            <Badge key={sid} tone="neutral">
+                              {s?.name ?? sid.slice(-6)}
+                            </Badge>
+                          );
+                        })}
+                        {p.solutionIds.length > 2 && (
+                          <span className="text-slate-500">+{p.solutionIds.length - 2}</span>
+                        )}
+                      </div>
+                    )}
+                  </Td>
+                  <Td className="text-xs">
+                    {p.advanceMinCents === null && p.advanceMaxCents === null ? (
+                      <span className="text-slate-400">—</span>
+                    ) : (
+                      <>
+                        {p.advanceMinCents !== null
+                          ? formatCents(p.advanceMinCents, "EUR")
+                          : "min ∅"}
+                        {" → "}
+                        {p.advanceMaxCents !== null
+                          ? formatCents(p.advanceMaxCents, "EUR")
+                          : "max ∅"}
+                      </>
+                    )}
+                  </Td>
                   <Td>
                     {p.active ? (
                       <Badge tone="green">Active</Badge>
@@ -182,7 +299,6 @@ export function InstallmentPlansAdmin() {
                       <Badge tone="neutral">Inactive</Badge>
                     )}
                   </Td>
-                  <Td className="text-xs text-slate-500">{formatDate(p.createdAt)}</Td>
                   <Td>
                     <div className="flex items-center gap-1">
                       <Button

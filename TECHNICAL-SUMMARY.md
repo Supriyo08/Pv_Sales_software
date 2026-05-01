@@ -362,3 +362,279 @@ Earlier additions still active:
 - [x] System runs end-to-end on the macOS dev stack documented in `README.md`
 
 Acceptance per contract §9 may be confirmed by email.
+
+---
+
+# v1.2 Addendum — Review 1.1 (May 2026)
+
+**Delivered to:** Edilteca S.r.l. (follow-up to v1.1)
+**Source spec:** Review 1.1 — SolarNetwork — Dev. Supriyo — Recr. Uju (PDF, 1 May 2026)
+
+Review 1.1 surfaces six follow-up sections; the items below map each to its
+implementation. Test count went from **65 → 87** (across 15 files).
+
+## v1.2 §1. Contracts
+
+### ContractDetail shows chosen solution + version + plan
+- **Backend:** new `GET /v1/catalog/solutions/:id`, `GET /v1/catalog/solution-versions/:id`,
+  `GET /v1/catalog/installment-plans/:id` (`backend/src/modules/catalog/catalog.{controller,routes}.ts`).
+- **Frontend:** `frontend/src/pages/ContractDetail.tsx` adds a "Solution & payment"
+  card (third column) showing solution name, version validity, change reason,
+  base price, agent/manager commission %, payment method, plan + months,
+  per-installment amount, advance.
+- **Smoke:** open any contract → see the new card with solution & plan info.
+
+### Edit a contract after creation (admin approval workflow)
+- **NEW backend module:** `backend/src/modules/contract-edit-requests/`
+  (model, service, controller, routes). Endpoints: `POST /v1/contracts/:id/edit-requests`,
+  `GET /v1/contract-edit-requests`, `POST /v1/contract-edit-requests/:id/{approve,reject,cancel}`,
+  `GET /v1/contract-edit-requests/pending-count`.
+- **Backend service:** `contractService.applyEdit(id, changes)` re-validates price
+  range + payment-method invariants and emits `contract.updated` so the
+  commission handler can recalculate (`contract.service.ts` + `commission.handlers.ts`).
+- **Whitelist:** only `amountCents`, `paymentMethod`, `advanceCents`,
+  `installmentPlanId`, `solutionVersionId` may be requested.
+- **Frontend:** "Request edit" button on `ContractDetail` opens a modal;
+  pending-edit banner shows for everyone; admin/AM see Approve / Reject buttons.
+  Admin queue at `/admin/contract-edit-requests`.
+- **Notifications:** `CONTRACT_EDIT_REQUESTED` (→ admins + manager),
+  `CONTRACT_EDIT_APPROVED|REJECTED` (→ requester).
+- **Test:** `tests/contract-edit-requests.test.ts` (4) — create, approve mutates,
+  reject is no-op, whitelist drops non-allowed fields, can't edit cancelled.
+
+### Generate contract PDF from contract page + admin approval gate before sign
+- **Contract model:** new `generatedDocumentId`, `generatedFromTemplateId`,
+  `generationApprovedAt`, `generationApprovedBy` fields.
+- **Backend:** `contractService.generate(id, {templateId, values})` renders the
+  template via existing `templateService.renderToPdf`, persists as
+  `Document {kind:"CONTRACT_DRAFT"}`, emits `contract.generation_requested`.
+  `contractService.approveGenerated()` clears the gate; `sign()` returns 403
+  while a generated draft exists without approval.
+- **Routes:** `POST /v1/contracts/:id/generate`, `POST /v1/contracts/:id/approve-generated`
+  (ADMIN/AREA_MANAGER).
+- **Frontend:** `ContractDetail` "Generate PDF" button opens template picker +
+  placeholder fields; status banners track pending / approved generation; sign
+  button is hidden while generation pending.
+- **Test:** `tests/contract-generation.test.ts` (3) — generate creates doc, sign
+  blocked while pending, sign permitted after approve.
+
+## v1.2 §2. Contract Templates
+
+### Word-like rich-text editor
+- **Frontend:** `frontend/src/components/ui/RichTextEditor.tsx` — TipTap
+  (`@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/extension-placeholder`,
+  `@tiptap/extension-link`) with toolbar: bold, italic, H1-H3, bullet/ordered
+  lists, blockquote, link, "Insert @placeholder" + "Insert OPTIONAL block".
+- **Backend:** `template.service.htmlToText()` (lazy-loaded `cheerio`) strips
+  HTML to plain text before feeding pdf-lib. Bold/italic visual fidelity is
+  lost in PDF output; full WYSIWFM (Puppeteer) is on the v1.3 backlog.
+
+### Upload from desktop (.html / .docx / .txt)
+- **Backend:** `POST /v1/templates/upload` (multer memoryStorage, 10 MB cap).
+  `.docx` → HTML via `mammoth`; `.html`/`.htm` stored as-is; `.txt` wrapped in
+  `<pre>`.
+- **Frontend:** "Upload .docx / .html" button on `TemplatesAdmin` triggers the
+  pipeline; user is prompted for the template name.
+
+### Templates assigned to solutions
+- **Backend:** `template.model.ts` adds `solutionIds: ObjectId[]` (empty = all
+  solutions). Controller schemas accept the field.
+- **Frontend:** TemplatesAdmin form has a multi-select chip picker for
+  solutions. Generation modal in `ContractDetail` filters templates to those
+  matching the contract's solution (or empty solutionIds).
+
+## v1.2 §3. Solutions
+
+### Deactivate / archive whole solution
+- **Backend:** `solution.model.ts` adds `active: Boolean` (default true).
+  `deletedAt` keeps its prior "archived" semantic. Service exposes `setActive`,
+  `archive`, `unarchive`. Endpoints: `PATCH /v1/catalog/solutions/:id/active`,
+  `POST /v1/catalog/solutions/:id/{archive,unarchive}` (ADMIN-only).
+- **Frontend:** `Solutions.tsx` shows a status pill (active/inactive/archived)
+  and per-row actions (Deactivate, Archive, Restore). "Show archived" toggle
+  in the page header sets `?includeArchived=true`.
+
+### Solutions list shows enabled installment plans + agent commission %
+- **Backend:** `solution.service.listSolutionsEnriched()` aggregates the latest
+  active version per solution + linked installment plans (one extra query each).
+  Reachable via `GET /v1/catalog/solutions?enriched=true`.
+- **Frontend:** `Solutions.tsx` columns: Name · Status · Active version base
+  price · Agent % · Manager % · Linked plans (badges).
+
+### Active version's `changeReason` more visible
+- **Frontend:** `SolutionDetail.tsx` adds a brand-coloured callout under the
+  page title showing the active version's reason + activation date + binding
+  count. The version table still shows reasons per row.
+
+## v1.2 §4. Installment Plans
+
+### Plan ↔ solution linking + advance-payment range + deactivate
+- **Backend:** `installment-plan.model.ts` adds `solutionIds: ObjectId[]`,
+  `advanceMinCents: number|null`, `advanceMaxCents: number|null`. Service:
+  `list({ solutionId })` filters by solution (empty solutionIds = applies to
+  all). Validation: `advanceMin <= advanceMax`.
+- **Backend (contract):** `contract.service.create` and `applyEdit` enforce
+  `advanceMinCents <= advanceCents <= advanceMaxCents` when payment method is
+  `ADVANCE_INSTALLMENTS`.
+- **Frontend (admin):** `InstallmentPlansAdmin.tsx` adds solution multi-select,
+  advance min/max inputs, and shows existing values in the list table.
+- **Frontend (agent):** `ContractNew.tsx` filters the plan dropdown by selected
+  solution; shows the plan's advance range as a hint; client-side warning when
+  the advance is out of range.
+- **Test:** `tests/installment-plan-link.test.ts` (3) — solution filter,
+  rejects below min, rejects above max.
+
+## v1.2 §5. Users
+
+### Deactivate (soft-delete) + reactivate + admin password reset
+- **Backend service:** `userService.list({includeInactive})`,
+  `softDelete()` revokes refresh tokens, new `reactivate(id)` restores
+  `deletedAt=null` + re-validates hierarchy, `adminResetPassword(id, newPwd)`
+  hashes via bcrypt + revokes all refresh tokens for the target user.
+- **Backend (auth):** `revokeAllRefreshTokens(userId)` scans Redis for
+  `refresh:{userId}:*` and deletes — used by both deactivate and reset-password.
+- **Endpoints:** `POST /v1/users/:id/reactivate`, `POST /v1/users/:id/reset-password`
+  (ADMIN-only). `GET /v1/users` accepts `?includeInactive=true`.
+- **Frontend:** `UsersAdmin.tsx` rename "Delete" → "Deactivate" (red), add
+  "Reactivate" (emerald) on inactive rows, add "Reset password" → modal,
+  add "Show inactive" toggle in the page header.
+
+## v1.2 §6. Clarifications — Reassignment with commission split
+
+### Customer-level commission split
+- **Backend:** `customer.model.ts` gains a `commissionSplit` sub-document:
+  `{ agentSplits: [{userId, bp}], bonusCountBeneficiaryId,
+  managerBonusBeneficiaryId, managerOverrideBeneficiaryId }` (null = standard
+  single-agent flow). `customer.service.reassign` extended to accept and
+  validate splits (sum must = 10000 bp; user roles checked; AM scope enforced).
+- **Backend (commission):** `commission.service.generateForContract` reads
+  `customer.commissionSplit` and emits one Commission per `agentSplits[]`
+  entry, with amount = `effectiveBase × agentBp × splitBp / 1e8`. Manager
+  override goes to `managerOverrideBeneficiaryId` (or primary agent's manager).
+- **Frontend:** `CustomerDetail.tsx` reassign dialog has an opt-in "Configure
+  commission split" panel: per-agent BP slider + sum validation, beneficiary
+  pickers for bonus count + manager bonus + manager override. Active split is
+  rendered as a brand-coloured callout above the dialog.
+- **Scope decision:** split applies to **future contracts only**. Existing
+  signed contracts are immutable per the append-only commission ledger
+  invariant. (See plan `Open assumption #2`.)
+- **Test:** `tests/reassign-split.test.ts` (4) — splits 60/40 correctly, falls
+  back without split, rejects bad bp sum, derives manager from primary agent.
+
+### Inventory control clarification
+Already implemented in v1.1; documented separately in
+`INVENTORY-CONTROL-USAGE.md`.
+
+## v1.2 §7. General troubleshooting — Reversal review queue
+
+### Cancel installation + admin-decided reversal
+- **Backend (installation):** `installation.model.ts` adds `CANCELLED` status,
+  `cancelledAt`, `cancellationReason`. `installation.service.cancel(id, reason)`
+  clears `activatedAt`, sets status, fires `installation.reversed` event.
+  Endpoint: `POST /v1/installations/:id/cancel` (ADMIN/AREA_MANAGER).
+- **NEW module:** `backend/src/modules/reversal-reviews/`
+  - `model`: `{ kind: COMMISSION|BONUS, subjectId, contractId, installationId,
+    beneficiaryUserId, period, amountCents, status, decision, reduceCents, … }`
+  - `service.createForInstallation(id)`: idempotent; finds active commissions
+    for the contract + bonuses for the agent/manager in the activation period;
+    creates one ReversalReview per. Fires `reversal_review.created`.
+  - `service.decide(id, decision, reduceCents, deciderId, note)`:
+    - `KEEP`: just mark reviewed (e.g. AM authorized advance).
+    - `REVERT`: supersede the commission (or its linked bonus's commission +
+      delete the bonus row).
+    - `REDUCE`: supersede + create a smaller replacement commission row.
+  - Endpoints: `GET /v1/reversal-reviews`, `POST /v1/reversal-reviews/:id/decide`
+    (ADMIN-only), `GET /v1/reversal-reviews/pending-count`.
+- **Notifications:** `REVERSAL_REVIEW_CREATED` → all admins.
+- **Frontend:** `ReversalReviewsAdmin.tsx` page lists pending/decided reviews
+  with one-click Keep / Reduce (prompts for amount) / Revert actions.
+- **Test:** `tests/reversal-review.test.ts` (4) — install cancel creates
+  reviews, REVERT supersedes, KEEP marks reviewed, REDUCE supersedes + creates
+  smaller row.
+
+## v1.2 §8. Others — Advance-payment authorization to AM
+
+### Advance-pay authorization workflow
+- **NEW module:** `backend/src/modules/advance-pay-authorizations/`
+  - `model`: `{ contractId (unique), requestedAt, decidedBy, decidedAt,
+    status: PENDING|AUTHORIZED|DECLINED|RESOLVED_BY_INSTALL, note }`.
+  - `service.ensureForContract(id)`: idempotent on `contract.approved`.
+  - `service.decide(id, AUTHORIZED|DECLINED, deciderId, note)`:
+    - `AUTHORIZED`: triggers `commissionService.generateForContract()` directly
+      (idempotent guard skips when active commissions already exist).
+    - `DECLINED`: no commission action — waits for installation activation.
+  - `service.resolveByInstallActivation(contractId)`: on
+    `installation.activated`, marks pending → `RESOLVED_BY_INSTALL` and triggers
+    deferred commission generation. AUTHORIZED auths are no-ops here.
+  - Endpoints: `GET /v1/advance-pay-authorizations`, `POST /:id/decide`
+    (ADMIN/AREA_MANAGER), `GET /pending-count`.
+- **Backend (event flow change):**
+  `contract.service.approve()` now emits `contract.approved` (not
+  `contract.signed`). The advance-pay-auth handler listens and creates the
+  request record + notifies the AM. The legacy `contract.signed` event still
+  fires from `contract.service.sign()` when `approvalRequired=false` (v1.1
+  legacy + tests). Commission handler subscribes to both `contract.signed` and
+  `contract.commissionable`, with an idempotency guard that skips if active
+  commissions already exist for the contract.
+- **Notifications:** `ADVANCE_PAY_AUTH_REQUESTED` → assigned AM + all admins.
+- **Frontend:** `AdvancePayAuthAdmin.tsx` page lists pending/decided
+  authorizations with Authorize / Decline buttons (prompts for note).
+- **Test:** `tests/advance-pay-auth.test.ts` (4) — idempotent ensure,
+  AUTHORIZED triggers commissions, DECLINED defers to install, idempotent on
+  re-trigger.
+
+### Sidebar Approvals section
+- **Frontend:** `AppLayout.tsx` adds an "Approvals" group between Catalog and
+  Insights. Items (visible per role): Contract edits, Price approvals (moved
+  from Administration), Advance pay, Reversal reviews. Each item polls its
+  pending count every 30s and shows a count badge when > 0.
+- New routes wired in `App.tsx`: `/admin/contract-edit-requests`,
+  `/admin/advance-pay`, `/admin/reversal-reviews`.
+
+---
+
+## v1.2 Test inventory
+
+`backend/tests/` — vitest, in-memory MongoDB. Run with `npm test`.
+
+| File | Tests | Coverage |
+|---|---|---|
+| `users.test.ts` | 11 | hierarchy, agent-without-manager, cycle detection, soft-delete |
+| `commissions.test.ts` | 9 | immutability, agent + manager math, supersession, recalc snapshot |
+| `bonuses.test.ts` | 10 | runForPeriod, idempotency, recalc, network bonus, period bounds |
+| `bonus-rules.test.ts` | 5 | role+condition combo validation |
+| `payments.test.ts` | 8 | status derivation, refund, dispute, cancel, supersession |
+| `templates.test.ts` | 7 | placeholder analysis, optional sections, render math |
+| `audit.test.ts` | 4 | ObjectId/Date/Buffer serialisation, sensitive redaction |
+| `payment-methods.test.ts` | 5 | commission base under each payment method |
+| `custom-pricing.test.ts` | 6 | linear base, step rules, threshold semantics |
+| **v1.2:** `contract-edit-requests.test.ts` | 4 | create / approve / reject / whitelist |
+| **v1.2:** `contract-generation.test.ts` | 3 | generate stores doc · sign blocked · sign permitted |
+| **v1.2:** `installment-plan-link.test.ts` | 3 | filter by solution · advance range enforcement |
+| **v1.2:** `reassign-split.test.ts` | 4 | split commissions · fallback · bp validation · manager fallback |
+| **v1.2:** `advance-pay-auth.test.ts` | 4 | idempotent ensure · AUTHORIZE fires · DECLINE defers · re-trigger no-op |
+| **v1.2:** `reversal-review.test.ts` | 4 | install cancel creates reviews · REVERT · KEEP · REDUCE |
+| **Total** | **87** | |
+
+## v1.2 verification checklist
+
+- [x] All Review 1.1 items implemented (8 sections × multiple sub-items)
+- [x] No regression — all v1.1 tests still pass
+- [x] 87/87 backend tests passing
+- [x] Frontend typechecks clean (`tsc -b`)
+- [x] Frontend production build succeeds (`npm run build`)
+- [x] Sidebar Approvals section + count badges live
+- [x] New event flow (contract.approved → advance-pay-auth → commissionable)
+      preserves backwards compatibility with v1.1 sign-time commission firing
+- [x] Documentation updated (this addendum + `INVENTORY-CONTROL-USAGE.md`)
+
+## v1.2 deferred to v1.3
+
+| Item | Why |
+|---|---|
+| Puppeteer-based PDF (full WYSIWYG including bold/italic/lists) | TipTap → cheerio→text → pdf-lib loses formatting. Puppeteer adds 200+ MB headless Chrome dep. |
+| .docx round-trip with full styles | mammoth import keeps basics; export needs `docx` lib (~1 day) |
+| Retroactive commission split for existing signed contracts | Per `Open assumption #2`: splits apply to future contracts only |
+| Email + SMS notifications | Notifications stay in-app; SMTP integration deferred |
+| WebSocket push for sidebar Approvals badges | 30s polling is fine for current team size |
+| Refund recovery automation on REVERT | Admin manually deducts from next payment; automated workflow deferred |

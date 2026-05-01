@@ -7,6 +7,11 @@ router.use(requireAuth);
 
 router.get("/solutions", ctrl.listSolutions);
 router.post("/solutions", requireRole("ADMIN"), ctrl.createSolution);
+router.get("/solutions/:id", ctrl.getSolution);
+// Per Review 1.1 §3: deactivate / activate / archive whole solution.
+router.patch("/solutions/:id/active", requireRole("ADMIN"), ctrl.setSolutionActive);
+router.post("/solutions/:id/archive", requireRole("ADMIN"), ctrl.archiveSolution);
+router.post("/solutions/:id/unarchive", requireRole("ADMIN"), ctrl.unarchiveSolution);
 router.get("/solutions/:id/versions", ctrl.listVersions);
 router.get("/solutions/:id/versions/active", ctrl.activeVersion);
 router.post("/solutions/:id/versions", requireRole("ADMIN"), ctrl.createVersion);
@@ -16,9 +21,11 @@ router.patch(
   requireRole("ADMIN"),
   ctrl.updateVersion
 );
+router.get("/solution-versions/:id", ctrl.getVersion);
 
 router.get("/installment-plans", ctrl.listInstallmentPlans);
 router.post("/installment-plans", requireRole("ADMIN"), ctrl.createInstallmentPlan);
+router.get("/installment-plans/:id", ctrl.getInstallmentPlan);
 router.patch(
   "/installment-plans/:id",
   requireRole("ADMIN"),

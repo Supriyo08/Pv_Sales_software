@@ -84,12 +84,89 @@ export async function softDelete(id: string, scope: Scope) {
 }
 
 /**
+ * Per Review 1.1 §6: optional commission-split configuration for the customer.
+ * Future contracts on this customer route commissions according to these rules.
+ * Existing signed contracts are unaffected (no retroactive recalc).
+ */
+export type CommissionSplitInput = {
+  agentSplits: { userId: string; bp: number }[];
+  bonusCountBeneficiaryId?: string | null;
+  managerBonusBeneficiaryId?: string | null;
+  managerOverrideBeneficiaryId?: string | null;
+};
+
+async function validateCommissionSplit(
+  split: CommissionSplitInput,
+  scope: Scope
+) {
+  if (!Array.isArray(split.agentSplits) || split.agentSplits.length === 0) {
+    throw new HttpError(400, "commissionSplit.agentSplits must contain at least one entry");
+  }
+  const totalBp = split.agentSplits.reduce((acc, e) => acc + e.bp, 0);
+  if (totalBp !== 10_000) {
+    throw new HttpError(400, "commissionSplit agentSplits must sum to 10000 (100%)");
+  }
+  for (const entry of split.agentSplits) {
+    if (!Types.ObjectId.isValid(entry.userId)) {
+      throw new HttpError(400, `Invalid agent userId in split: ${entry.userId}`);
+    }
+    const u = await User.findOne({ _id: entry.userId, deletedAt: null });
+    if (!u || u.role !== "AGENT") {
+      throw new HttpError(400, `Agent ${entry.userId} not found or not an active AGENT`);
+    }
+    if (!scope.isAdmin) {
+      const isMine = u.managerId && u.managerId.toString() === scope.selfId;
+      if (!isMine) {
+        throw new HttpError(
+          403,
+          `Cannot include agent ${u.fullName} (outside your network) in split`
+        );
+      }
+    }
+  }
+  for (const k of [
+    "bonusCountBeneficiaryId",
+    "managerBonusBeneficiaryId",
+    "managerOverrideBeneficiaryId",
+  ] as const) {
+    const v = split[k];
+    if (v) {
+      if (!Types.ObjectId.isValid(v)) throw new HttpError(400, `Invalid ${k}`);
+      const u = await User.findOne({ _id: v, deletedAt: null });
+      if (!u) throw new HttpError(400, `User ${v} (${k}) not found`);
+      if (k === "bonusCountBeneficiaryId" && u.role !== "AGENT") {
+        throw new HttpError(400, "bonusCountBeneficiaryId must reference an AGENT");
+      }
+      if (
+        (k === "managerBonusBeneficiaryId" ||
+          k === "managerOverrideBeneficiaryId") &&
+        u.role !== "AREA_MANAGER" &&
+        u.role !== "ADMIN"
+      ) {
+        throw new HttpError(400, `${k} must reference an AREA_MANAGER or ADMIN`);
+      }
+    }
+  }
+}
+
+/**
  * Reassign a customer to a different agent.
  * - ADMIN: can assign to any AGENT (or null to unassign)
  * - AREA_MANAGER: can assign to any AGENT in their network
  * - AGENT: not allowed (returns 403)
+ *
+ * Per Review 1.1 §6: an optional commissionSplit may be supplied.
+ *   - Sum of agentSplits[].bp must equal 10000 (100%).
+ *   - Sets where bonus count + manager bonus + manager override are credited.
+ *   - Applies to FUTURE contracts only — existing commission rows are immutable.
+ *   - Pass `commissionSplit: null` to clear.
  */
-export async function reassign(id: string, agentId: string | null, scope: Scope) {
+export async function reassign(
+  id: string,
+  agentId: string | null,
+  scope: Scope,
+  commissionSplit?: CommissionSplitInput | null
+) {
   if (!scope.isAdmin && !(await isAreaManager(scope.selfId))) {
     throw new HttpError(403, "Only admins or area managers can reassign customers");
   }
@@ -119,11 +196,15 @@ export async function reassign(id: string, agentId: string | null, scope: Scope)
     Object.assign(filter, customerScopeMatch(scope));
   }
 
-  const updated = await Customer.findOneAndUpdate(
-    filter,
-    { assignedAgentId: agentId },
-    { new: true }
-  );
+  const update: Record<string, unknown> = { assignedAgentId: agentId };
+  if (commissionSplit === null) {
+    update.commissionSplit = null;
+  } else if (commissionSplit !== undefined) {
+    await validateCommissionSplit(commissionSplit, scope);
+    update.commissionSplit = commissionSplit;
+  }
+
+  const updated = await Customer.findOneAndUpdate(filter, update, { new: true });
   if (!updated) throw new HttpError(404, "Customer not found or not in your scope");
   return updated;
 }

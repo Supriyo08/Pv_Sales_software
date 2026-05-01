@@ -1,43 +1,44 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText, Trash2, Edit3, Eye, Plus, ShieldAlert } from "lucide-react";
+import { FileText, Trash2, Edit3, Eye, Plus, ShieldAlert, UploadCloud } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardHeader } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { Field, Input, Textarea } from "../components/ui/Input";
+import { Field, Input } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
+import { RichTextEditor } from "../components/ui/RichTextEditor";
 import { formatDate } from "../lib/format";
 import { useRole } from "../store/auth";
-import type { ContractTemplate } from "../lib/api-types";
+import type { ContractTemplate, Solution } from "../lib/api-types";
 
 const PLACEHOLDER_RE = /@([a-zA-Z_][a-zA-Z0-9_]*)/g;
 const SECTION_RE = /\[\[OPTIONAL:([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^\]]+))?\]\]/g;
 
-const SAMPLE = `CONTRACT FOR PHOTOVOLTAIC SYSTEM
+const SAMPLE = `<h1>CONTRACT FOR PHOTOVOLTAIC SYSTEM</h1>
 
-Customer: @customer_name
-Fiscal code: @fiscal_code
-Address: @address
+<p><strong>Customer:</strong> @customer_name<br/>
+<strong>Fiscal code:</strong> @fiscal_code<br/>
+<strong>Address:</strong> @address</p>
 
-Total amount: €@amount
-Installation date: @install_date
+<p><strong>Total amount:</strong> €@amount<br/>
+<strong>Installation date:</strong> @install_date</p>
 
-[[OPTIONAL:warranty|Extended 10-year warranty]]
+<p>[[OPTIONAL:warranty|Extended 10-year warranty]]
 The Provider extends an additional 10-year warranty on all panels, inverter, and labour.
-[[/OPTIONAL]]
+[[/OPTIONAL]]</p>
 
-[[OPTIONAL:financing|Financing terms]]
+<p>[[OPTIONAL:financing|Financing terms]]
 Total amount split into @months monthly instalments of €@monthly,
 direct-debit on the @direct_debit_day of each month.
-[[/OPTIONAL]]
+[[/OPTIONAL]]</p>
 
-Signed in @city on @date.
+<p>Signed in @city on @date.</p>
 
-Customer signature: ____________________`;
+<p>Customer signature: ____________________</p>`;
 
 function analyzeLocally(body: string) {
   const placeholders = new Set<string>();
@@ -63,12 +64,19 @@ export function TemplatesAdmin() {
     description: "",
     body: SAMPLE,
     active: true,
+    solutionIds: [] as string[],
   });
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data: templates = [] } = useQuery<ContractTemplate[]>({
     queryKey: ["templates"],
     queryFn: async () => (await api.get("/templates")).data,
+  });
+
+  const { data: solutions = [] } = useQuery<Solution[]>({
+    queryKey: ["solutions"],
+    queryFn: async () => (await api.get("/catalog/solutions")).data,
   });
 
   const local = useMemo(() => analyzeLocally(form.body), [form.body]);
@@ -81,6 +89,7 @@ export function TemplatesAdmin() {
           description: form.description,
           body: form.body,
           active: form.active,
+          solutionIds: form.solutionIds,
         });
       }
       return api.post("/templates", {
@@ -88,6 +97,7 @@ export function TemplatesAdmin() {
         description: form.description,
         body: form.body,
         active: form.active,
+        solutionIds: form.solutionIds,
       });
     },
     onSuccess: () => {
@@ -98,6 +108,30 @@ export function TemplatesAdmin() {
       setError(err?.response?.data?.error ?? "Failed"),
   });
 
+  const uploadTemplate = useMutation({
+    mutationFn: async (file: File) => {
+      const baseName =
+        window.prompt(
+          "Template name?",
+          file.name.replace(/\.[^.]+$/, "")
+        )?.trim() ?? "";
+      if (!baseName) throw new Error("Cancelled");
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("name", baseName);
+      fd.append("solutionIds", JSON.stringify(form.solutionIds));
+      return api.post<ContractTemplate>("/templates/upload", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+    onError: (err: { response?: { data?: { error?: string } }; message?: string }) =>
+      setError(err?.response?.data?.error ?? err.message ?? "Upload failed"),
+  });
+
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/templates/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
@@ -106,7 +140,7 @@ export function TemplatesAdmin() {
   const reset = () => {
     setEditingId(null);
     setEditorOpen(false);
-    setForm({ name: "", description: "", body: SAMPLE, active: true });
+    setForm({ name: "", description: "", body: SAMPLE, active: true, solutionIds: [] });
     setError(null);
   };
 
@@ -118,6 +152,7 @@ export function TemplatesAdmin() {
       description: t.description,
       body: t.body,
       active: t.active,
+      solutionIds: t.solutionIds ?? [],
     });
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -126,9 +161,18 @@ export function TemplatesAdmin() {
   const openNew = () => {
     setEditingId(null);
     setEditorOpen(true);
-    setForm({ name: "", description: "", body: SAMPLE, active: true });
+    setForm({ name: "", description: "", body: SAMPLE, active: true, solutionIds: [] });
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const toggleSolution = (id: string) => {
+    setForm((s) => ({
+      ...s,
+      solutionIds: s.solutionIds.includes(id)
+        ? s.solutionIds.filter((x) => x !== id)
+        : [...s.solutionIds, id],
+    }));
   };
 
   // Defensive: only ADMIN can manage templates. Backend already enforces; this avoids confusion if a non-admin lands here.
@@ -143,12 +187,40 @@ export function TemplatesAdmin() {
         description="Build templates with @placeholders and [[OPTIONAL:id|label]]…[[/OPTIONAL]] sections. Agents pick a template, fill the form, and the system generates the contract document."
         action={
           !editorOpen ? (
-            <Button onClick={openNew} icon={<Plus className="size-4" />}>
-              New template
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                icon={<UploadCloud className="size-4" />}
+              >
+                Upload .docx / .html
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".html,.htm,.docx,.txt,text/html,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) uploadTemplate.mutate(file);
+                }}
+              />
+              <Button onClick={openNew} icon={<Plus className="size-4" />}>
+                New template
+              </Button>
+            </div>
           ) : null
         }
       />
+
+      {uploadTemplate.isPending && (
+        <Card className="border-brand-200 bg-brand-50/40">
+          <p className="text-sm text-brand-900">
+            <UploadCloud className="size-4 inline mr-2" />
+            Uploading template…
+          </p>
+        </Card>
+      )}
 
       {!editorOpen && (
         <Card className="border-amber-200 bg-amber-50/50">
@@ -189,15 +261,38 @@ export function TemplatesAdmin() {
               />
             </Field>
             <Field label="Body" required>
-              <Textarea
+              <RichTextEditor
                 value={form.body}
-                onChange={(e) =>
-                  setForm({ ...form, body: (e.target as HTMLTextAreaElement).value })
-                }
-                rows={20}
-                required
-                className="font-mono text-xs leading-relaxed min-h-96"
+                onChange={(html) => setForm((s) => ({ ...s, body: html }))}
+                placeholder="Compose the contract template…"
               />
+            </Field>
+            <Field
+              label="Restrict to solutions"
+              hint="Empty = applies to all solutions. Otherwise, only contracts whose solution matches will be able to use this template."
+            >
+              <div className="flex flex-wrap gap-2">
+                {solutions.length === 0 && (
+                  <span className="text-xs text-slate-500">No solutions yet.</span>
+                )}
+                {solutions.map((s) => {
+                  const on = form.solutionIds.includes(s._id);
+                  return (
+                    <button
+                      key={s._id}
+                      type="button"
+                      onClick={() => toggleSolution(s._id)}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                        on
+                          ? "bg-brand-50 border-brand-300 text-brand-700"
+                          : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}
+                    >
+                      {s.name}
+                    </button>
+                  );
+                })}
+              </div>
             </Field>
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input

@@ -8,6 +8,42 @@ export type EventMap = {
   "solution.version.updated": { solutionId: string; versionId: string };
   "bonus.calculated": { userId: string; period: string; amountCents: number };
   "payment.created": { paymentId: string; userId: string };
+  // Per Review 1.1 §8: contract approved by admin/AM (legacy v1.1 path emitted
+  // contract.signed directly; v1.2 splits this so the advance-pay-auth flow can
+  // gate commission generation on AM authorization).
+  "contract.approved": { contractId: string };
+  "contract.commissionable": { contractId: string };
+  // Per Review 1.1 §1: edit-request workflow.
+  "contract.updated": { contractId: string };
+  "contract.edit_requested": {
+    requestId: string;
+    contractId: string;
+    requestedBy: string;
+  };
+  "contract.edit_decided": {
+    requestId: string;
+    contractId: string;
+    decision: "APPROVED" | "REJECTED";
+    requestedBy: string;
+  };
+  // Per Review 1.1 §1: generation approval gate.
+  "contract.generation_requested": { contractId: string };
+  "contract.generation_approved": { contractId: string; agentId: string };
+  // Per Review 1.1 §8: AM advance-payment authorization.
+  "advance_pay_auth.requested": { contractId: string; authorizationId: string };
+  "advance_pay_auth.decided": {
+    contractId: string;
+    authorizationId: string;
+    decision: "AUTHORIZED" | "DECLINED";
+    decidedBy: string;
+  };
+  // Per Review 1.1 §7: bonus/commission reversal review.
+  "installation.reversed": { installationId: string; contractId: string };
+  "reversal_review.created": {
+    reviewId: string;
+    contractId: string;
+    kind: "COMMISSION" | "BONUS";
+  };
 };
 
 class TypedEmitter {

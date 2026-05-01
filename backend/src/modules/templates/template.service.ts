@@ -42,6 +42,45 @@ export function analyze(body: string): TemplateAnalysis {
   };
 }
 
+/**
+ * Per Review 1.1 §2: templates may now be authored as HTML (via TipTap) or .docx
+ * imports converted to HTML. We strip tags here so renderToPdf gets plain text
+ * with sensible block-level whitespace. Bold/italic visual fidelity is lost in
+ * the v1.2 PDF; full WYSIWYG (Puppeteer) is on the v1.3 backlog.
+ *
+ * Heuristic: if body contains "<" + alpha, treat as HTML — otherwise pass through.
+ * Cheerio is loaded lazily so plain-text templates don't pay for it.
+ */
+function htmlToText(input: string): string {
+  if (!/<[a-zA-Z]/.test(input)) return input;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cheerio = require("cheerio") as typeof import("cheerio");
+  const $ = cheerio.load(`<root>${input}</root>`, {
+    xml: { decodeEntities: true },
+  });
+
+  // Insert newlines around block-level elements before we extract text.
+  const blocks = "h1,h2,h3,h4,h5,h6,p,div,blockquote,ul,ol,pre,br,hr";
+  $(blocks).each((_i, el) => {
+    const tag = (el as { tagName?: string }).tagName ?? "";
+    if (tag === "br") {
+      $(el).replaceWith("\n");
+    } else if (tag === "hr") {
+      $(el).replaceWith("\n----------\n");
+    } else if (tag === "li") {
+      // handled by `li` selector below
+    } else {
+      $(el).prepend("\n").append("\n");
+    }
+  });
+  $("li").each((_i, el) => {
+    $(el).prepend("• ").append("\n");
+  });
+
+  const text = $("root").text();
+  return text.replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function render(
   body: string,
   values: Record<string, string>,
@@ -64,6 +103,10 @@ export function render(
     const v = values[tag];
     return v === undefined || v === null || v === "" ? `[[${tag}]]` : v;
   });
+
+  // If body was authored as HTML (TipTap / .docx import), convert to plain text
+  // for downstream PDF rendering and JSON preview consistency.
+  rendered = htmlToText(rendered);
 
   // Collapse 3+ newlines into 2 (cleanup after omitting sections)
   rendered = rendered.replace(/\n{3,}/g, "\n\n").trim();
@@ -240,6 +283,7 @@ export async function create(input: {
   description?: string;
   body: string;
   active?: boolean;
+  solutionIds?: string[];
   createdBy: string;
 }) {
   const exists = await ContractTemplate.findOne({ name: input.name, deletedAt: null });
@@ -249,6 +293,7 @@ export async function create(input: {
     description: input.description ?? "",
     body: input.body,
     active: input.active ?? true,
+    solutionIds: input.solutionIds ?? [],
     createdBy: input.createdBy,
   });
 }
@@ -260,6 +305,7 @@ export async function update(
     description: string;
     body: string;
     active: boolean;
+    solutionIds: string[];
   }>
 ) {
   const updates: Record<string, unknown> = {};
@@ -273,6 +319,53 @@ export async function update(
   );
   if (!t) throw new HttpError(404, "Template not found");
   return t;
+}
+
+/**
+ * Per Review 1.1 §2: import a template from a desktop file (.html or .docx).
+ * .docx is converted via mammoth → HTML so the existing analyzer + renderer keep
+ * working without any new pipelines.
+ */
+export async function createFromUpload(input: {
+  filename: string;
+  buffer: Buffer;
+  mimeType: string;
+  name: string;
+  description?: string;
+  solutionIds?: string[];
+  createdBy: string;
+}) {
+  const ext = input.filename.toLowerCase().split(".").pop();
+  let body: string;
+
+  if (ext === "html" || ext === "htm" || input.mimeType === "text/html") {
+    body = input.buffer.toString("utf-8");
+  } else if (
+    ext === "docx" ||
+    input.mimeType ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    const mammoth = await import("mammoth");
+    const { value } = await mammoth.convertToHtml({ buffer: input.buffer });
+    body = value;
+  } else if (ext === "txt" || input.mimeType === "text/plain") {
+    // Wrap plain text in a <pre> block so HTML formatting tools have something to manipulate.
+    body = `<pre>${input.buffer.toString("utf-8")}</pre>`;
+  } else {
+    throw new HttpError(
+      400,
+      `Unsupported file type "${ext ?? input.mimeType}" — accepted: .html, .htm, .docx, .txt`
+    );
+  }
+
+  return create({
+    name: input.name,
+    description: input.description,
+    body,
+    active: true,
+    solutionIds: input.solutionIds,
+    createdBy: input.createdBy,
+  });
 }
 
 export async function softDelete(id: string) {

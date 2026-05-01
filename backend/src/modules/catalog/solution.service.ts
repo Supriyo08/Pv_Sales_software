@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import { Solution } from "./solution.model";
 import { SolutionVersion } from "./solution-version.model";
+import { InstallmentPlan } from "./installment-plan.model";
 import { HttpError } from "../../middleware/error";
 import { events } from "../../lib/events";
 
@@ -31,8 +32,106 @@ type UpdateVersionInput = {
   boundToCustomerIds?: string[];
 };
 
-export async function listSolutions() {
-  return Solution.find({ deletedAt: null }).sort({ name: 1 });
+export async function listSolutions(opts: { includeArchived?: boolean } = {}) {
+  const q: Record<string, unknown> = {};
+  if (!opts.includeArchived) q.deletedAt = null;
+  return Solution.find(q).sort({ name: 1 });
+}
+
+/**
+ * Per Review 1.1 §3: enriched list — for each solution, includes the latest
+ * active version's commission rates and the installment plans linked to it.
+ * Used by the Solutions admin page to surface "what does the agent see".
+ */
+export async function listSolutionsEnriched(opts: { includeArchived?: boolean } = {}) {
+  const solutions = await listSolutions(opts);
+  if (solutions.length === 0) return [];
+
+  const solutionIds = solutions.map((s) => s._id);
+  const now = new Date();
+
+  // Latest active version per solution (validFrom <= now, validTo > now or null)
+  const versions = await SolutionVersion.find({
+    solutionId: { $in: solutionIds },
+    active: true,
+    validFrom: { $lte: now },
+    $or: [{ validTo: null }, { validTo: { $gt: now } }],
+  })
+    .sort({ validFrom: -1 })
+    .lean();
+  const versionByContext = new Map<string, (typeof versions)[number]>();
+  for (const v of versions) {
+    const k = v.solutionId.toString();
+    if (!versionByContext.has(k)) versionByContext.set(k, v);
+  }
+
+  // Linked installment plans: either solutionIds includes this solution OR empty (all).
+  const plans = await InstallmentPlan.find({
+    deletedAt: null,
+    active: true,
+    $or: [
+      { solutionIds: { $size: 0 } },
+      { solutionIds: { $in: solutionIds } },
+    ],
+  }).lean();
+
+  return solutions.map((s) => {
+    const v = versionByContext.get(s._id.toString());
+    const linkedPlans = plans.filter(
+      (p) =>
+        !p.solutionIds ||
+        p.solutionIds.length === 0 ||
+        p.solutionIds.some((pid) => pid.toString() === s._id.toString())
+    );
+    return {
+      ...s.toObject(),
+      activeVersion: v
+        ? {
+            _id: v._id.toString(),
+            basePriceCents: v.basePriceCents,
+            currency: v.currency,
+            agentBp: v.agentBp,
+            managerBp: v.managerBp,
+            changeReason: v.changeReason,
+          }
+        : null,
+      installmentPlans: linkedPlans.map((p) => ({
+        _id: p._id.toString(),
+        name: p.name,
+        months: p.months,
+      })),
+    };
+  });
+}
+
+export async function setActive(id: string, active: boolean) {
+  const s = await Solution.findOneAndUpdate(
+    { _id: id, deletedAt: null },
+    { active },
+    { new: true }
+  );
+  if (!s) throw new HttpError(404, "Solution not found");
+  return s;
+}
+
+export async function archive(id: string) {
+  const s = await Solution.findOneAndUpdate(
+    { _id: id, deletedAt: null },
+    { deletedAt: new Date(), active: false },
+    { new: true }
+  );
+  if (!s) throw new HttpError(404, "Solution not found");
+  return s;
+}
+
+export async function unarchive(id: string) {
+  const s = await Solution.findOneAndUpdate(
+    { _id: id },
+    { deletedAt: null, active: true },
+    { new: true }
+  );
+  if (!s) throw new HttpError(404, "Solution not found");
+  return s;
 }
 
 export async function getSolution(id: string) {
@@ -50,6 +149,12 @@ export async function createSolution(input: CreateSolutionInput) {
 export async function listVersions(solutionId: string) {
   await getSolution(solutionId);
   return SolutionVersion.find({ solutionId }).sort({ validFrom: -1 });
+}
+
+export async function getVersion(versionId: string) {
+  const v = await SolutionVersion.findById(versionId);
+  if (!v) throw new HttpError(404, "Solution version not found");
+  return v;
 }
 
 /**

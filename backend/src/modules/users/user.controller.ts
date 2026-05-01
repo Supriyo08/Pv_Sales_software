@@ -35,9 +35,10 @@ export const me: RequestHandler = async (req, res, next) => {
   }
 };
 
-export const list: RequestHandler = async (_req, res, next) => {
+export const list: RequestHandler = async (req, res, next) => {
   try {
-    res.json(await userService.list());
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await userService.list({ includeInactive }));
   } catch (err) {
     next(err);
   }
@@ -108,13 +109,58 @@ export const remove: RequestHandler = async (req, res, next) => {
     await userService.softDelete(id);
     void audit.log({
       actorId: req.user.sub,
-      action: "user.delete",
+      action: "user.deactivate",
       targetType: "User",
       targetId: id,
       before,
       requestId: req.requestId,
     });
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.1 §5: re-activate a previously deactivated user.
+export const reactivate: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const id = req.params.id!;
+    const user = await userService.reactivate(id);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "user.reactivate",
+      targetType: "User",
+      targetId: id,
+      after: user?.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+};
+
+const resetPasswordSchema = z.object({
+  newPassword: z.string().min(8),
+});
+
+// Per Review 1.1 §5: admin sets a new password for any user; revokes their refresh tokens.
+export const resetPassword: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = resetPasswordSchema.parse(req.body);
+    const user = await userService.adminResetPassword(req.params.id!, body.newPassword);
+    // Audit log records the action but never the password value.
+    void audit.log({
+      actorId: req.user.sub,
+      action: "user.reset_password",
+      targetType: "User",
+      targetId: req.params.id!,
+      metadata: { byAdmin: true },
+      requestId: req.requestId,
+    });
+    res.json({ ok: true, userId: user._id.toString() });
   } catch (err) {
     next(err);
   }

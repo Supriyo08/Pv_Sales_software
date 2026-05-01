@@ -27,6 +27,9 @@ import { PriceApprovalsAdmin } from "./pages/PriceApprovalsAdmin";
 import { PricingFormulasAdmin } from "./pages/PricingFormulasAdmin";
 import { Quote } from "./pages/Quote";
 import { CustomerFormAdmin } from "./pages/CustomerFormAdmin";
+import { ContractEditRequestsAdmin } from "./pages/ContractEditRequestsAdmin";
+import { AdvancePayAuthAdmin } from "./pages/AdvancePayAuthAdmin";
+import { ReversalReviewsAdmin } from "./pages/ReversalReviewsAdmin";
 import { NotificationsPage } from "./pages/Notifications";
 import { RequireAuth } from "./components/RequireAuth";
 import { AppLayout } from "./components/AppLayout";
@@ -72,6 +75,12 @@ export default function App() {
               <Route path="/admin/price-approvals" element={<PriceApprovalsAdmin />} />
               <Route path="/admin/pricing-formulas" element={<PricingFormulasAdmin />} />
               <Route path="/admin/customer-form" element={<CustomerFormAdmin />} />
+              <Route
+                path="/admin/contract-edit-requests"
+                element={<ContractEditRequestsAdmin />}
+              />
+              <Route path="/admin/advance-pay" element={<AdvancePayAuthAdmin />} />
+              <Route path="/admin/reversal-reviews" element={<ReversalReviewsAdmin />} />
               <Route path="/admin/audit-logs" element={<AuditLogs />} />
               <Route path="/notifications" element={<NotificationsPage />} />
             </Route>
