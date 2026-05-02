@@ -632,9 +632,126 @@ Already implemented in v1.1; documented separately in
 
 | Item | Why |
 |---|---|
-| Puppeteer-based PDF (full WYSIWYG including bold/italic/lists) | TipTap → cheerio→text → pdf-lib loses formatting. Puppeteer adds 200+ MB headless Chrome dep. |
-| .docx round-trip with full styles | mammoth import keeps basics; export needs `docx` lib (~1 day) |
+| Puppeteer-based PDF (full WYSIWYG of TipTap-authored templates) | TipTap path still uses pdf-lib. .docx-uploaded templates already round-trip with full fidelity (see follow-up below). Puppeteer would unify both paths. |
 | Retroactive commission split for existing signed contracts | Per `Open assumption #2`: splits apply to future contracts only |
 | Email + SMS notifications | Notifications stay in-app; SMTP integration deferred |
 | WebSocket push for sidebar Approvals badges | 30s polling is fine for current team size |
 | Refund recovery automation on REVERT | Admin manually deducts from next payment; automated workflow deferred |
+| Run-merge for split-formatted .docx placeholders | If Word splits `@@nome_agente` across runs (different formatting mid-tag), substitution misses. Workaround: re-type the placeholder uniformly. |
+| Optional `[[OPTIONAL:id]]` sections inside .docx templates | Deleting paragraphs in the docx XML safely is non-trivial; .docx round-trip currently supports placeholder substitution only. Use TipTap templates if you need toggles. |
+
+---
+
+# Follow-up to Review 1.1 (2026-05-02)
+
+Two adjustments after Edilteca reviewed v1.2:
+
+## 1. Placeholder syntax: `@` → `@@`
+
+**Why:** Single `@` collided with literal email addresses in real templates
+(e.g. `info@edilteca.it`, `edilteca2022@pec.it` — both present in Edilteca's
+own master contract). The regex `/@([a-z_]+)/` was wrongly capturing `@pec`
+and `@edilteca` as placeholders to substitute.
+
+**Switch:** All placeholders now use `@@tag` (double `@`). A single `@`
+followed by text is treated as plain content — emails and Twitter handles stay
+intact.
+
+**Files changed:**
+- `backend/src/modules/templates/template.service.ts` — `PLACEHOLDER_RE`
+  is now `/@@([a-zA-Z_][a-zA-Z0-9_]*)/g`. Both the HTML render path and the
+  new .docx path share this regex.
+- `frontend/src/components/ui/RichTextEditor.tsx` — "Insert tag" toolbar
+  button inserts `@@tag` (was `@tag`).
+- `frontend/src/pages/TemplatesAdmin.tsx` — sample template, live-analyzer
+  regex, badge labels, and Quick Reference card all use `@@`.
+- `frontend/src/pages/TemplateRender.tsx` and
+  `frontend/src/pages/ContractDetail.tsx` — placeholder field labels show
+  `@@tag`.
+- `backend/tests/templates.test.ts` — every test uses `@@`. New test:
+  *"ignores email addresses (single @) — does not match as placeholder"*
+  pinning the email-vs-placeholder behaviour against regression.
+
+**Migration note:** any v1.1 template body containing `@variable` must be
+re-saved with `@@variable` (manual edit in TemplatesAdmin). No production
+templates exist yet for Edilteca, so no migration script was needed.
+
+## 2. .docx round-trip preserves original Word formatting
+
+**Why:** When admins upload a `.docx` master contract (e.g. Edilteca's
+multi-page Italian agreement with tables, headers/footers, embedded images,
+custom fonts), the v1.2 path lost all of that — mammoth converted to HTML and
+the PDF renderer flattened it to plain text. Generated contracts looked
+nothing like the source.
+
+**Fix:** When a template is uploaded as `.docx`, the original file is now
+persisted on disk and used as the source-of-truth at generation time. Output
+is a `.docx` whose visual layout mirrors the upload exactly, with only the
+`@@placeholder` tokens substituted.
+
+**Implementation:**
+- New dependency: `pizzip` (small, ~50 KB) — reads/writes the .docx zip.
+- `backend/src/modules/templates/template.model.ts` — added
+  `sourceDocxPath: string | null`.
+- `backend/src/modules/templates/template.service.ts`:
+  - `createFromUpload` saves the raw `.docx` bytes under
+    `uploads/templates/<timestamp>-<safe-name>.docx` and stores the relative
+    URL on the template document. Mammoth-derived HTML still populates `body`
+    so the editor preview + placeholder analyzer keep working.
+  - `renderDocx(sourceBuffer, values)` walks the XML parts (`word/document.xml`,
+    `word/header*.xml`, `word/footer*.xml`, footnotes, endnotes), runs the
+    `@@tag` substitution on each, and rezips. Newlines in supplied values are
+    preserved as Word soft line-breaks (`<w:br/>`).
+  - `substituteDocxXml(xml, values)` is exported so tests can pin the substitution
+    behaviour without building a full .docx.
+  - XML special characters in user-supplied values (`<`, `>`, `&`, `"`) are
+    escaped to keep the document well-formed.
+- `backend/src/modules/contracts/contract.service.ts` — `generate()` now
+  branches on `template.sourceDocxPath`:
+  - **Set** → render via `pizzip`, output `.docx`
+    (`mimeType: application/vnd.openxmlformats-officedocument.wordprocessingml.document`).
+  - **Null** → existing TipTap → cheerio → pdf-lib → PDF path.
+  Either way the result is persisted as a `Document` (kind `CONTRACT_DRAFT`)
+  attached to the contract.
+- `frontend/src/pages/ContractDetail.tsx`:
+  - Generate dialog labels switch from "Generate PDF" to neutral
+    "Generate contract".
+  - When the chosen template has `sourceDocxPath`, a brand-coloured note
+    confirms "output will mirror the original Word formatting".
+  - The pending-approval and approved banners detect `mimeType` and label
+    the link as ".docx" or "PDF" appropriately.
+- `frontend/src/lib/api-types.ts` — `ContractTemplate.sourceDocxPath` added.
+
+**Tests added** (`backend/tests/templates.test.ts`, +6):
+- `extracts unique @@placeholders with counts`
+- `ignores email addresses (single @) — does not match as placeholder`
+  *(pins the email/placeholder boundary)*
+- `substituteDocxXml replaces @@tag inside the raw word/document.xml`
+- `does not match @-only emails like edilteca2022@pec.it`
+  *(pins the boundary inside docx XML)*
+- `flags missing placeholders with [[tag]] sentinel`
+- `XML-escapes user-supplied values to keep the doc well-formed`
+- `renderDocx produces a valid zip with substituted document.xml`
+
+Total backend tests: 87 → **93** (15 files).
+
+**Limitations** (documented in `TemplatesAdmin` and TECHNICAL-SUMMARY):
+- Word may split a placeholder across multiple `<w:r><w:t>` runs if formatting
+  changes mid-token (e.g. italicising "nome" but not "_agente"). Such tokens
+  won't match. Workaround: re-type the placeholder uniformly.
+- `.docx` round-trip does **not** support `[[OPTIONAL:id|label]]…[[/OPTIONAL]]`
+  toggles — paragraph-deletion in Word XML is non-trivial. Use a TipTap-authored
+  HTML template if you need optional sections.
+
+**Smoke procedure:**
+1. Sign in as ADMIN → `/templates`.
+2. Click "Upload .docx / .html" and pick a Word file containing `@@nome_agente`,
+   `@@Place_birth_client`, plus literal text like `info@edilteca.it`.
+3. Confirm the template appears in the list with both placeholders detected
+   (the email is NOT detected — exactly the desired behaviour).
+4. Sign in as AGENT → start a new contract → click "Generate contract".
+5. Pick the uploaded template. The dialog shows the brand-coloured note
+   confirming Word fidelity. Fill placeholder values. Submit.
+6. Admin approves the generation in the Approvals queue.
+7. Agent downloads the generated `.docx`. Open in Word → identical layout to
+   the original, with the placeholders replaced and the email address intact.

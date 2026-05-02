@@ -345,7 +345,7 @@ export function ContractDetail() {
                 onClick={() => setGenerateOpen(true)}
                 icon={<FileText className="size-4" />}
               >
-                {contract.generatedDocumentId ? "Re-generate PDF" : "Generate PDF"}
+                {contract.generatedDocumentId ? "Re-generate" : "Generate contract"}
               </Button>
             )}
             {canApproveGen && (
@@ -395,7 +395,7 @@ export function ContractDetail() {
             <FileText className="size-5 text-amber-700 shrink-0 mt-0.5" />
             <div className="flex-1">
               <div className="font-semibold text-amber-900 mb-1">
-                Generated PDF awaiting approval
+                Generated contract awaiting approval
               </div>
               <p className="text-sm text-amber-800 mb-3">
                 Admin or area manager must review the generated contract before you
@@ -408,7 +408,8 @@ export function ContractDetail() {
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 text-sm text-amber-900 underline"
                 >
-                  <FileText className="size-4" /> View generated PDF
+                  <FileText className="size-4" /> Download generated{" "}
+                  {generatedDoc.mimeType?.includes("word") ? ".docx" : "PDF"}
                 </a>
               )}
             </div>
@@ -422,7 +423,7 @@ export function ContractDetail() {
             <FileCheck2 className="size-5 text-green-700 shrink-0 mt-0.5" />
             <div className="flex-1">
               <div className="font-semibold text-green-900 mb-1">
-                Generated PDF approved — ready to sign
+                Generated contract approved — ready to sign
               </div>
               {generatedDoc && (
                 <a
@@ -431,7 +432,8 @@ export function ContractDetail() {
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 text-sm text-green-900 underline"
                 >
-                  <FileText className="size-4" /> Print or download approved PDF
+                  <FileText className="size-4" /> Print or download approved{" "}
+                  {generatedDoc.mimeType?.includes("word") ? ".docx" : "PDF"}
                 </a>
               )}
             </div>
@@ -874,13 +876,13 @@ export function ContractDetail() {
               </div>
               <div className="grid sm:grid-cols-2 gap-3">
                 {selTemplate.analysis.placeholders.map((p) => (
-                  <Field key={p.tag} label={`@${p.tag}`}>
+                  <Field key={p.tag} label={`@@${p.tag}`}>
                     <Input
                       value={tplValues[p.tag] ?? ""}
                       onChange={(e) =>
                         setTplValues((s) => ({ ...s, [p.tag]: e.target.value }))
                       }
-                      placeholder={`value for @${p.tag}`}
+                      placeholder={`value for @@${p.tag}`}
                     />
                   </Field>
                 ))}
@@ -894,6 +896,12 @@ export function ContractDetail() {
                 This template has no placeholders. Click Generate to render it as-is.
               </p>
             )}
+          {selTemplate?.sourceDocxPath && (
+            <p className="text-xs text-brand-700 bg-brand-50 border border-brand-200 rounded-md p-2">
+              ✓ This template was uploaded as <strong>.docx</strong> — output will
+              mirror the original Word formatting (fonts, tables, headers, images).
+            </p>
+          )}
         </div>
       </Modal>
     </div>

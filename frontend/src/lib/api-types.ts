@@ -372,6 +372,9 @@ export type ContractTemplate = {
   active: boolean;
   // Per Review 1.1 §2: empty array = applies to all solutions.
   solutionIds: string[];
+  // Per follow-up to Review 1.1 (2026-05-02): when set, contract generation
+  // round-trips the original .docx so output mirrors the source's formatting.
+  sourceDocxPath: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

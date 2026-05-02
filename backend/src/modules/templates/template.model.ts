@@ -13,6 +13,11 @@ const templateSchema = new Schema(
       default: [],
       index: true,
     },
+    // Per follow-up to Review 1.1 (2026-05-02): when a template is uploaded as
+    // .docx we keep the original file on disk so generation produces a .docx
+    // that mirrors the source's exact visual formatting. `body` still holds the
+    // mammoth-extracted HTML for editor preview + placeholder analysis.
+    sourceDocxPath: { type: String, default: null },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     deletedAt: { type: Date, default: null },
   },

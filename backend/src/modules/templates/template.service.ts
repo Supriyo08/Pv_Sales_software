@@ -1,6 +1,13 @@
+import path from "path";
+import fs from "fs";
+import PizZip from "pizzip";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import { ContractTemplate } from "./template.model";
 import { HttpError } from "../../middleware/error";
+
+const UPLOAD_ROOT = path.resolve(process.cwd(), "uploads");
+const TEMPLATE_DIR = path.join(UPLOAD_ROOT, "templates");
+if (!fs.existsSync(TEMPLATE_DIR)) fs.mkdirSync(TEMPLATE_DIR, { recursive: true });
 
 export type Placeholder = {
   tag: string;
@@ -17,7 +24,10 @@ export type TemplateAnalysis = {
   sections: OptionalSection[];
 };
 
-const PLACEHOLDER_RE = /@([a-zA-Z_][a-zA-Z0-9_]*)/g;
+// Per follow-up to Review 1.1 (2026-05-02): placeholders use a DOUBLE-@ prefix
+// (`@@tag`). This prevents conflicts with literal email addresses like
+// `info@edilteca.it` that previously matched the single-@ regex incorrectly.
+const PLACEHOLDER_RE = /@@([a-zA-Z_][a-zA-Z0-9_]*)/g;
 const SECTION_OPEN_RE = /\[\[OPTIONAL:([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^\]]+))?\]\]/g;
 const SECTION_PAIR_RE =
   /\[\[OPTIONAL:([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^\]]+))?\]\]([\s\S]*?)\[\[\/OPTIONAL\]\]/g;
@@ -284,6 +294,7 @@ export async function create(input: {
   body: string;
   active?: boolean;
   solutionIds?: string[];
+  sourceDocxPath?: string | null;
   createdBy: string;
 }) {
   const exists = await ContractTemplate.findOne({ name: input.name, deletedAt: null });
@@ -294,6 +305,7 @@ export async function create(input: {
     body: input.body,
     active: input.active ?? true,
     solutionIds: input.solutionIds ?? [],
+    sourceDocxPath: input.sourceDocxPath ?? null,
     createdBy: input.createdBy,
   });
 }
@@ -323,8 +335,13 @@ export async function update(
 
 /**
  * Per Review 1.1 §2: import a template from a desktop file (.html or .docx).
- * .docx is converted via mammoth → HTML so the existing analyzer + renderer keep
- * working without any new pipelines.
+ *
+ * Per follow-up to Review 1.1 (2026-05-02): when the upload is a .docx we ALSO
+ * persist the original file on disk and remember its path on the template doc.
+ * Generation later uses the .docx as the source-of-truth so the produced
+ * contract mirrors the original Word formatting exactly. The mammoth-derived
+ * HTML still populates `body` so the editor and placeholder analyzer keep
+ * working unchanged.
  */
 export async function createFromUpload(input: {
   filename: string;
@@ -337,6 +354,7 @@ export async function createFromUpload(input: {
 }) {
   const ext = input.filename.toLowerCase().split(".").pop();
   let body: string;
+  let sourceDocxPath: string | null = null;
 
   if (ext === "html" || ext === "htm" || input.mimeType === "text/html") {
     body = input.buffer.toString("utf-8");
@@ -348,6 +366,12 @@ export async function createFromUpload(input: {
     const mammoth = await import("mammoth");
     const { value } = await mammoth.convertToHtml({ buffer: input.buffer });
     body = value;
+    // Persist the original .docx so generation can round-trip it.
+    const safeBase = input.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filename = `${Date.now()}-${safeBase}`;
+    const fullPath = path.join(TEMPLATE_DIR, filename);
+    fs.writeFileSync(fullPath, input.buffer);
+    sourceDocxPath = `/uploads/templates/${filename}`;
   } else if (ext === "txt" || input.mimeType === "text/plain") {
     // Wrap plain text in a <pre> block so HTML formatting tools have something to manipulate.
     body = `<pre>${input.buffer.toString("utf-8")}</pre>`;
@@ -364,8 +388,89 @@ export async function createFromUpload(input: {
     body,
     active: true,
     solutionIds: input.solutionIds,
+    sourceDocxPath,
     createdBy: input.createdBy,
   });
+}
+
+/**
+ * Per follow-up to Review 1.1 (2026-05-02): when a template was uploaded as a
+ * .docx, generate the contract by substituting `@@placeholder` tokens directly
+ * inside the original Word file. Output is a .docx that retains every visual
+ * detail from the source — fonts, paragraph styles, tables, headers/footers,
+ * embedded images.
+ *
+ * Implementation uses `pizzip` to read/write the .docx archive and applies
+ * substitution in `word/document.xml` plus any header/footer parts. The regex
+ * runs against the raw XML; placeholders typed as a single uniform run (the
+ * normal case) substitute correctly. If Word split formatting mid-token (e.g.
+ * the user italicised half of `@@nome_agente`), the token won't match — re-type
+ * the placeholder uniformly to fix.
+ *
+ * Optional `[[OPTIONAL:id|label]]…[[/OPTIONAL]]` markers are NOT supported in
+ * the .docx round-trip path (deleting paragraphs in document.xml safely is
+ * complex). Use TipTap-authored templates if you need optional sections.
+ */
+const DOCX_XML_PARTS = [
+  "word/document.xml",
+  "word/header1.xml",
+  "word/header2.xml",
+  "word/header3.xml",
+  "word/footer1.xml",
+  "word/footer2.xml",
+  "word/footer3.xml",
+  "word/footnotes.xml",
+  "word/endnotes.xml",
+];
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export function substituteDocxXml(xml: string, values: Record<string, string>): string {
+  return xml.replace(PLACEHOLDER_RE, (_match, tag) => {
+    const v = values[tag];
+    if (v === undefined || v === null || v === "") return `[[${tag}]]`;
+    // Preserve user-entered newlines as Word soft line-breaks.
+    const escaped = escapeXml(String(v));
+    if (escaped.includes("\n")) {
+      return escaped.split("\n").join("</w:t><w:br/><w:t xml:space=\"preserve\">");
+    }
+    return escaped;
+  });
+}
+
+export function renderDocx(
+  sourceBuffer: Buffer,
+  values: Record<string, string>
+): Buffer {
+  const zip = new PizZip(sourceBuffer);
+  for (const part of DOCX_XML_PARTS) {
+    const file = zip.file(part);
+    if (!file) continue;
+    const xml = file.asText();
+    const next = substituteDocxXml(xml, values);
+    if (next !== xml) zip.file(part, next);
+  }
+  return zip.generate({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+  });
+}
+
+export async function readSourceDocx(template: {
+  sourceDocxPath?: string | null;
+}): Promise<Buffer | null> {
+  if (!template.sourceDocxPath) return null;
+  // Strip the leading "/uploads/" so we resolve under UPLOAD_ROOT.
+  const relativePath = template.sourceDocxPath.replace(/^\/uploads\//, "");
+  const fullPath = path.join(UPLOAD_ROOT, relativePath);
+  if (!fs.existsSync(fullPath)) return null;
+  return fs.readFileSync(fullPath);
 }
 
 export async function softDelete(id: string) {

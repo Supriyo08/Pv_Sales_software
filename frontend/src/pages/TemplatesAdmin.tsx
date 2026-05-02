@@ -15,28 +15,30 @@ import { formatDate } from "../lib/format";
 import { useRole } from "../store/auth";
 import type { ContractTemplate, Solution } from "../lib/api-types";
 
-const PLACEHOLDER_RE = /@([a-zA-Z_][a-zA-Z0-9_]*)/g;
+// Per follow-up to Review 1.1 (2026-05-02): placeholders are @@tag (double @).
+// Single @ is reserved for literal text (e.g. email addresses like info@edilteca.it).
+const PLACEHOLDER_RE = /@@([a-zA-Z_][a-zA-Z0-9_]*)/g;
 const SECTION_RE = /\[\[OPTIONAL:([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^\]]+))?\]\]/g;
 
 const SAMPLE = `<h1>CONTRACT FOR PHOTOVOLTAIC SYSTEM</h1>
 
-<p><strong>Customer:</strong> @customer_name<br/>
-<strong>Fiscal code:</strong> @fiscal_code<br/>
-<strong>Address:</strong> @address</p>
+<p><strong>Customer:</strong> @@customer_name<br/>
+<strong>Fiscal code:</strong> @@fiscal_code<br/>
+<strong>Address:</strong> @@address</p>
 
-<p><strong>Total amount:</strong> €@amount<br/>
-<strong>Installation date:</strong> @install_date</p>
+<p><strong>Total amount:</strong> €@@amount<br/>
+<strong>Installation date:</strong> @@install_date</p>
 
 <p>[[OPTIONAL:warranty|Extended 10-year warranty]]
 The Provider extends an additional 10-year warranty on all panels, inverter, and labour.
 [[/OPTIONAL]]</p>
 
 <p>[[OPTIONAL:financing|Financing terms]]
-Total amount split into @months monthly instalments of €@monthly,
-direct-debit on the @direct_debit_day of each month.
+Total amount split into @@months monthly instalments of €@@monthly,
+direct-debit on the @@direct_debit_day of each month.
 [[/OPTIONAL]]</p>
 
-<p>Signed in @city on @date.</p>
+<p>Signed in @@city on @@date.</p>
 
 <p>Customer signature: ____________________</p>`;
 
@@ -184,7 +186,7 @@ export function TemplatesAdmin() {
     <div className="space-y-6">
       <PageHeader
         title="Contract templates"
-        description="Build templates with @placeholders and [[OPTIONAL:id|label]]…[[/OPTIONAL]] sections. Agents pick a template, fill the form, and the system generates the contract document."
+        description="Build templates with @@placeholders and [[OPTIONAL:id|label]]…[[/OPTIONAL]] sections. Agents pick a template, fill the form, and the system generates the contract document. Upload .docx to keep the original Word formatting end-to-end."
         action={
           !editorOpen ? (
             <div className="flex gap-2">
@@ -238,12 +240,15 @@ export function TemplatesAdmin() {
       <Card>
         <h3 className="font-semibold mb-1">{editingId ? "Edit template" : "New template"}</h3>
         <p className="text-sm text-slate-500 mb-4">
-          Use <code className="bg-slate-100 px-1 rounded">@field_name</code> for
-          inline placeholders and{" "}
+          Use <code className="bg-slate-100 px-1 rounded">@@field_name</code> (double @)
+          for inline placeholders — single @ is left alone so emails like{" "}
+          <code className="bg-slate-100 px-1 rounded">info@edilteca.it</code> stay
+          intact. Use{" "}
           <code className="bg-slate-100 px-1 rounded">
             [[OPTIONAL:id|Label]]…[[/OPTIONAL]]
           </code>{" "}
-          to mark sections an agent can drop with a checkbox.
+          to mark sections an agent can drop with a checkbox (HTML / TipTap
+          templates only).
         </p>
         <div className="grid lg:grid-cols-2 gap-6">
           <div className="space-y-4">
@@ -319,7 +324,7 @@ export function TemplatesAdmin() {
                 )}
                 {local.placeholders.map((p) => (
                   <Badge key={p} tone="brand">
-                    @{p}
+                    @@{p}
                   </Badge>
                 ))}
               </div>
@@ -432,14 +437,18 @@ export function TemplatesAdmin() {
 
       <Card>
         <h3 className="font-semibold mb-2">Quick reference</h3>
-        <div className="grid md:grid-cols-2 gap-6 text-sm">
+        <div className="grid md:grid-cols-3 gap-6 text-sm">
           <div>
             <div className="font-medium text-slate-700 mb-1">Placeholders</div>
-            <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{`Hello @customer_name,
-your order of €@amount...`}</pre>
+            <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{`Hello @@customer_name,
+your order of €@@amount.
+
+Contact: info@edilteca.it
+(literal email — single @ is left alone)`}</pre>
             <p className="text-xs text-slate-500 mt-1">
-              Each <code className="bg-slate-100 px-1">@tag</code> becomes a form field for the
-              agent.
+              Each <code className="bg-slate-100 px-1">@@tag</code> becomes a form field
+              for the agent. A single <code className="bg-slate-100 px-1">@</code> is
+              treated as plain text — emails stay intact.
             </p>
           </div>
           <div>
@@ -448,8 +457,22 @@ your order of €@amount...`}</pre>
 Warranty body text...
 [[/OPTIONAL]]`}</pre>
             <p className="text-xs text-slate-500 mt-1">
-              Agent sees a checkbox labeled "Extended warranty"; ticking <strong>removes</strong>{" "}
-              the section from the rendered contract.
+              Agent sees a checkbox labeled "Extended warranty"; ticking{" "}
+              <strong>removes</strong> the section from the rendered contract.
+              <br />
+              <em>HTML / TipTap templates only.</em>
+            </p>
+          </div>
+          <div>
+            <div className="font-medium text-slate-700 mb-1">Upload .docx</div>
+            <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{`Type @@nome_agente
+in your Word doc, save,
+upload here.`}</pre>
+            <p className="text-xs text-slate-500 mt-1">
+              Generated contracts are exported as <strong>.docx</strong> with the
+              original Word formatting preserved (fonts, tables, headers,
+              images). Type each placeholder uniformly — Word may split runs if
+              you change formatting mid-tag.
             </p>
           </div>
         </div>

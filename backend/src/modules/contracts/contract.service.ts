@@ -428,21 +428,40 @@ export async function generate(id: string, input: GenerateInput) {
   });
   if (!template) throw new HttpError(400, "Template not found or inactive");
 
-  const text = templateService.render(
-    template.body,
-    input.values ?? {},
-    input.omitSections ?? []
-  );
-  const pdfBytes = await templateService.renderToPdf(
-    text,
-    `Contract ${contract._id.toString().slice(-8)}`
-  );
-
   const dir = path.join(UPLOAD_ROOT, "Contract");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const filename = `${Date.now()}-generated-${contract._id.toString()}.pdf`;
+
+  // Per follow-up to Review 1.1 (2026-05-02): if the template was uploaded as a
+  // .docx, generate a .docx that mirrors the original Word formatting exactly.
+  // Otherwise (TipTap-authored or plain HTML upload), fall back to the PDF
+  // pipeline introduced in v1.1.
+  const sourceDocx = await templateService.readSourceDocx(template);
+  let bytes: Buffer | Uint8Array;
+  let mimeType: string;
+  let extension: string;
+
+  if (sourceDocx) {
+    bytes = templateService.renderDocx(sourceDocx, input.values ?? {});
+    mimeType =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    extension = "docx";
+  } else {
+    const text = templateService.render(
+      template.body,
+      input.values ?? {},
+      input.omitSections ?? []
+    );
+    bytes = await templateService.renderToPdf(
+      text,
+      `Contract ${contract._id.toString().slice(-8)}`
+    );
+    mimeType = "application/pdf";
+    extension = "pdf";
+  }
+
+  const filename = `${Date.now()}-generated-${contract._id.toString()}.${extension}`;
   const fullPath = path.join(dir, filename);
-  fs.writeFileSync(fullPath, pdfBytes);
+  fs.writeFileSync(fullPath, bytes);
   const url = `/uploads/Contract/${filename}`;
 
   const doc = await documentService.create({
@@ -450,8 +469,8 @@ export async function generate(id: string, input: GenerateInput) {
     ownerId: contract._id.toString(),
     kind: "CONTRACT_DRAFT",
     url,
-    mimeType: "application/pdf",
-    sizeBytes: pdfBytes.byteLength,
+    mimeType,
+    sizeBytes: bytes.byteLength,
     uploadedBy: input.generatedBy,
   });
 

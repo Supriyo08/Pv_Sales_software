@@ -26,10 +26,12 @@ type Props = {
 
 /**
  * Per Review 1.1 §2: word-like editor for contract templates.
- * Stores body as HTML. Existing template analyzer regexes `@name` and
- * `[[OPTIONAL:id]]…[[/OPTIONAL]]` markers — both work on HTML strings.
+ * Stores body as HTML. Existing template analyzer regexes `@@name` (per
+ * follow-up to Review 1.1, 2026-05-02 — double @@ avoids conflict with
+ * literal email addresses like `info@edilteca.it`) and `[[OPTIONAL:id]]…
+ * [[/OPTIONAL]]` markers — both work on HTML strings.
  *
- * "Insert @placeholder" / "Insert OPTIONAL block" buttons inject the markers
+ * "Insert @@placeholder" / "Insert OPTIONAL block" buttons inject the markers
  * inline so users don't have to remember the syntax.
  */
 export function RichTextEditor({
@@ -153,9 +155,9 @@ function Toolbar({ editor }: { editor: Editor | null }) {
         onClick={() => {
           const tag = window.prompt("Placeholder name (letters/numbers/underscore):");
           if (!tag || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tag)) return;
-          editor.chain().focus().insertContent(`@${tag}`).run();
+          editor.chain().focus().insertContent(`@@${tag}`).run();
         }}
-        title="Insert @placeholder"
+        title="Insert @@placeholder"
       >
         <AtSign className="size-4" />
         <span className="text-xs ml-1">tag</span>

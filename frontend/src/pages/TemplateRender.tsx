@@ -91,7 +91,7 @@ export function TemplateRender() {
                     {placeholders.map(({ tag }) => (
                       <Field
                         key={tag}
-                        label={`@${tag}`}
+                        label={`@@${tag}`}
                         hint={missing.includes(tag) ? "Missing — will render as [[" + tag + "]]" : undefined}
                       >
                         <Input
@@ -99,7 +99,7 @@ export function TemplateRender() {
                           onChange={(e) =>
                             setValues({ ...values, [tag]: e.target.value })
                           }
-                          placeholder={`Value for @${tag}`}
+                          placeholder={`Value for @@${tag}`}
                         />
                       </Field>
                     ))}
