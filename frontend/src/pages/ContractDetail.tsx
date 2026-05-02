@@ -12,7 +12,7 @@ import {
   FileText,
   FileCheck2,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, uploadUrl } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -20,6 +20,8 @@ import { Badge, StatusBadge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { Modal } from "../components/ui/Modal";
 import { Input, Textarea, Select, Field } from "../components/ui/Input";
+import { DocxPreview } from "../components/DocxPreview";
+import { DocumentActions } from "../components/DocumentActions";
 import { formatCents, formatDate, formatDateTime } from "../lib/format";
 import { useRole } from "../store/auth";
 import type {
@@ -401,17 +403,6 @@ export function ContractDetail() {
                 Admin or area manager must review the generated contract before you
                 can print or sign it. Once approved, you'll see a "Sign" action.
               </p>
-              {generatedDoc && (
-                <a
-                  href={`http://localhost:4000${generatedDoc.url}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-sm text-amber-900 underline"
-                >
-                  <FileText className="size-4" /> Download generated{" "}
-                  {generatedDoc.mimeType?.includes("word") ? ".docx" : "PDF"}
-                </a>
-              )}
             </div>
           </div>
         </Card>
@@ -425,18 +416,49 @@ export function ContractDetail() {
               <div className="font-semibold text-green-900 mb-1">
                 Generated contract approved — ready to sign
               </div>
-              {generatedDoc && (
-                <a
-                  href={`http://localhost:4000${generatedDoc.url}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-sm text-green-900 underline"
-                >
-                  <FileText className="size-4" /> Print or download approved{" "}
-                  {generatedDoc.mimeType?.includes("word") ? ".docx" : "PDF"}
-                </a>
-              )}
+              <p className="text-sm text-green-900">
+                Print or download below, sign with the customer, then upload the
+                signed scan for final approval.
+              </p>
             </div>
+          </div>
+        </Card>
+      )}
+
+      {generatedDoc && (
+        <Card padding={false} className="mb-6">
+          <div className="px-6 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="font-semibold flex items-center gap-2">
+                Generated contract
+                {generatedDoc.mimeType?.includes("word") ? (
+                  <Badge tone="brand">Word .docx</Badge>
+                ) : (
+                  <Badge tone="neutral">PDF</Badge>
+                )}
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Rendered exactly as the source — print or download for the customer
+                signature.
+              </p>
+            </div>
+            <DocumentActions
+              src={uploadUrl(generatedDoc.url)}
+              mimeType={generatedDoc.mimeType ?? ""}
+              baseFilename={`contract-${contract._id.slice(-8)}`}
+              printableSelector="#contract-generated-preview .docx-preview-content"
+            />
+          </div>
+          <div id="contract-generated-preview">
+            {generatedDoc.mimeType?.includes("word") ? (
+              <DocxPreview src={uploadUrl(generatedDoc.url)} flat />
+            ) : (
+              <iframe
+                src={uploadUrl(generatedDoc.url)}
+                title="Generated contract PDF"
+                className="w-full h-[80vh] border-0"
+              />
+            )}
           </div>
         </Card>
       )}

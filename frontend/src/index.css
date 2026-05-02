@@ -50,3 +50,60 @@ button {
 .animate-fade-in {
   animation: fade-in 0.2s ease-out;
 }
+
+/* ─── docx-preview rendering ─────────────────────────────────────────────
+   Per follow-up to Review 1.1 (round 2, 2026-05-02): the docx-preview
+   library renders Word documents into a structured HTML/CSS layout. Tailwind's
+   reset + font stack would otherwise override Word's typography, so we
+   isolate the preview area and let docx-preview's injected styles take over.
+   ────────────────────────────────────────────────────────────────────── */
+.docx-preview-host {
+  background: #e5e7eb; /* slate-200 — gives the page-shadow contrast */
+  isolation: isolate;
+}
+
+.docx-preview-host .docx-rendered {
+  font-family: "Calibri", "Liberation Sans", Arial, sans-serif;
+  color: #0f172a;
+  /* Center the rendered "pages" with breathing room */
+  padding: 1.5rem 1rem;
+}
+
+.docx-preview-host .docx-rendered section.docx {
+  background: white;
+  margin: 0 auto 1.25rem;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+}
+
+/* docx-preview uses tables, divs with inline styles, and image elements heavily.
+   Tailwind's preflight resets (img max-width, table border-collapse) interfere
+   with the layout. Reset just inside the preview container. */
+.docx-preview-host img {
+  max-width: none;
+}
+
+.docx-preview-host table {
+  border-collapse: collapse;
+}
+
+.docx-preview-host p {
+  margin: 0;
+}
+
+/* Print: drop the gray page wrapper and show only the rendered pages. */
+@media print {
+  .docx-preview-host {
+    background: white;
+    overflow: visible !important;
+    max-height: none !important;
+    border: 0 !important;
+  }
+  .docx-preview-host .docx-rendered {
+    padding: 0;
+  }
+  .docx-preview-host .docx-rendered section.docx {
+    box-shadow: none;
+    margin: 0;
+    page-break-after: always;
+  }
+}

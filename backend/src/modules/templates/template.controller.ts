@@ -26,15 +26,29 @@ const renderSchema = z.object({
   omitSections: z.array(z.string()).default([]),
 });
 
+/**
+ * Per follow-up to Review 1.1 (round 2, 2026-05-02): if a template's
+ * `sourceDocxPath` points at a file that no longer exists on disk (e.g. the
+ * template was created before persistence was wired up, or the file was
+ * deleted), strip it from the response so the frontend doesn't try to fetch
+ * a missing file. The frontend then renders it as a regular HTML template.
+ */
+async function projectTemplate(t: Awaited<ReturnType<typeof templateService.getById>>) {
+  const obj = t.toObject() as Record<string, unknown> & { sourceDocxPath?: string | null };
+  if (obj.sourceDocxPath) {
+    const buffer = await templateService.readSourceDocx({
+      sourceDocxPath: obj.sourceDocxPath,
+    });
+    if (!buffer) obj.sourceDocxPath = null;
+  }
+  return { ...obj, analysis: templateService.analyze(t.body) };
+}
+
 export const list: RequestHandler = async (_req, res, next) => {
   try {
     const all = await templateService.list();
-    res.json(
-      all.map((t) => ({
-        ...t.toObject(),
-        analysis: templateService.analyze(t.body),
-      }))
-    );
+    const projected = await Promise.all(all.map(projectTemplate));
+    res.json(projected);
   } catch (err) {
     next(err);
   }
@@ -43,7 +57,7 @@ export const list: RequestHandler = async (_req, res, next) => {
 export const get: RequestHandler = async (req, res, next) => {
   try {
     const t = await templateService.getById(req.params.id!);
-    res.json({ ...t.toObject(), analysis: templateService.analyze(t.body) });
+    res.json(await projectTemplate(t));
   } catch (err) {
     next(err);
   }
@@ -201,6 +215,42 @@ export const render: RequestHandler = async (req, res, next) => {
         .map((p) => p.tag)
         .filter((tag) => !body.values[tag]),
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Per follow-up to Review 1.1 (round 2, 2026-05-02): for templates uploaded as
+ * .docx, the standalone preview page renders the substituted Word document
+ * inline (so admins/agents see the same Word-fidelity output that contract
+ * generation would produce). This endpoint streams the rendered .docx bytes.
+ */
+const renderDocxSchema = z.object({
+  values: z.record(z.string(), z.string()).default({}),
+});
+
+export const renderDocx: RequestHandler = async (req, res, next) => {
+  try {
+    const body = renderDocxSchema.parse(req.body ?? {});
+    const t = await templateService.getById(req.params.id!);
+    const sourceBuffer = await templateService.readSourceDocx(t);
+    if (!sourceBuffer) {
+      throw new HttpError(
+        400,
+        "This template has no .docx source — use POST /:id/render for the text/HTML preview."
+      );
+    }
+    const out = templateService.renderDocx(sourceBuffer, body.values);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${t.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.docx"`
+    );
+    res.send(out);
   } catch (err) {
     next(err);
   }

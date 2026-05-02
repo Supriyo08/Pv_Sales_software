@@ -1,8 +1,19 @@
 import { useMemo, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText, Trash2, Edit3, Eye, Plus, ShieldAlert, UploadCloud } from "lucide-react";
-import { api } from "../lib/api";
+import {
+  FileText,
+  Trash2,
+  Edit3,
+  Eye,
+  Plus,
+  ShieldAlert,
+  UploadCloud,
+  ChevronDown,
+  ChevronRight,
+  FileType2,
+} from "lucide-react";
+import { api, uploadUrl } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardHeader } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -11,6 +22,9 @@ import { Badge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
 import { RichTextEditor } from "../components/ui/RichTextEditor";
+import { DocxPreview } from "../components/DocxPreview";
+import { DocumentActions } from "../components/DocumentActions";
+import { Modal } from "../components/ui/Modal";
 import { formatDate } from "../lib/format";
 import { useRole } from "../store/auth";
 import type { ContractTemplate, Solution } from "../lib/api-types";
@@ -61,6 +75,9 @@ export function TemplatesAdmin() {
   const qc = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [showHtmlBody, setShowHtmlBody] = useState(false);
+  // For previewing any template's source .docx in a modal from the list.
+  const [previewing, setPreviewing] = useState<ContractTemplate | null>(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -142,6 +159,7 @@ export function TemplatesAdmin() {
   const reset = () => {
     setEditingId(null);
     setEditorOpen(false);
+    setShowHtmlBody(false);
     setForm({ name: "", description: "", body: SAMPLE, active: true, solutionIds: [] });
     setError(null);
   };
@@ -149,6 +167,7 @@ export function TemplatesAdmin() {
   const startEdit = (t: ContractTemplate) => {
     setEditingId(t._id);
     setEditorOpen(true);
+    setShowHtmlBody(!t.sourceDocxPath); // .docx-source templates hide the HTML body by default
     setForm({
       name: t.name,
       description: t.description,
@@ -159,6 +178,10 @@ export function TemplatesAdmin() {
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  const editingTemplate = editingId
+    ? templates.find((t) => t._id === editingId) ?? null
+    : null;
 
   const openNew = () => {
     setEditingId(null);
@@ -265,13 +288,66 @@ export function TemplatesAdmin() {
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
               />
             </Field>
-            <Field label="Body" required>
-              <RichTextEditor
-                value={form.body}
-                onChange={(html) => setForm((s) => ({ ...s, body: html }))}
-                placeholder="Compose the contract template…"
-              />
-            </Field>
+            {editingTemplate?.sourceDocxPath ? (
+              <Field
+                label="Source Word document"
+                hint="This template was uploaded as .docx — the original Word file is the source-of-truth and is rendered below exactly as Microsoft Word would show it. Generated contracts mirror this view."
+              >
+                <div className="rounded-lg border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                    <div className="text-xs text-slate-600 flex items-center gap-2">
+                      <FileType2 className="size-4 text-brand-600" />
+                      <span className="font-medium">.docx fidelity preview</span>
+                    </div>
+                    <DocumentActions
+                      src={uploadUrl(editingTemplate.sourceDocxPath)}
+                      mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      baseFilename={editingTemplate.name.replace(/\s+/g, "_")}
+                      printableSelector="#template-edit-docx-preview .docx-preview-content"
+                    />
+                  </div>
+                  <div id="template-edit-docx-preview">
+                    <DocxPreview src={uploadUrl(editingTemplate.sourceDocxPath)} />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-700"
+                >
+                  <UploadCloud className="size-3.5" /> Replace with a new .docx
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowHtmlBody((v) => !v)}
+                  className="mt-2 ml-3 inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+                >
+                  {showHtmlBody ? (
+                    <ChevronDown className="size-3.5" />
+                  ) : (
+                    <ChevronRight className="size-3.5" />
+                  )}
+                  {showHtmlBody ? "Hide" : "Show"} HTML body (used as fallback &amp; analyzer source)
+                </button>
+                {showHtmlBody && (
+                  <div className="mt-3">
+                    <RichTextEditor
+                      value={form.body}
+                      onChange={(html) => setForm((s) => ({ ...s, body: html }))}
+                      placeholder="Mammoth-converted HTML, kept in sync with placeholder analysis"
+                    />
+                  </div>
+                )}
+              </Field>
+            ) : (
+              <Field label="Body" required>
+                <RichTextEditor
+                  value={form.body}
+                  onChange={(html) => setForm((s) => ({ ...s, body: html }))}
+                  placeholder="Compose the contract template…"
+                />
+              </Field>
+            )}
             <Field
               label="Restrict to solutions"
               hint="Empty = applies to all solutions. Otherwise, only contracts whose solution matches will be able to use this template."
@@ -379,6 +455,7 @@ export function TemplatesAdmin() {
           <Table>
             <THead>
               <Th>Name</Th>
+              <Th>Format</Th>
               <Th>Placeholders</Th>
               <Th>Sections</Th>
               <Th>Status</Th>
@@ -394,6 +471,15 @@ export function TemplatesAdmin() {
                       <div className="text-xs text-slate-500">{t.description}</div>
                     )}
                   </Td>
+                  <Td>
+                    {t.sourceDocxPath ? (
+                      <Badge tone="brand">
+                        <FileType2 className="size-3 inline mr-0.5" /> Word .docx
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral">HTML</Badge>
+                    )}
+                  </Td>
                   <Td className="text-xs">{t.analysis.placeholders.length}</Td>
                   <Td className="text-xs">{t.analysis.sections.length}</Td>
                   <Td>
@@ -406,12 +492,21 @@ export function TemplatesAdmin() {
                   <Td className="text-xs text-slate-500">{formatDate(t.updatedAt)}</Td>
                   <Td>
                     <div className="flex gap-1">
-                      <Link
-                        to={`/templates/${t._id}/render`}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50"
-                      >
-                        <Eye className="size-3.5" /> Render
-                      </Link>
+                      {t.sourceDocxPath ? (
+                        <button
+                          onClick={() => setPreviewing(t)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50"
+                        >
+                          <Eye className="size-3.5" /> Preview
+                        </button>
+                      ) : (
+                        <Link
+                          to={`/templates/${t._id}/render`}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50"
+                        >
+                          <Eye className="size-3.5" /> Render
+                        </Link>
+                      )}
                       <button
                         onClick={() => startEdit(t)}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-slate-600 hover:bg-slate-100"
@@ -477,6 +572,35 @@ upload here.`}</pre>
           </div>
         </div>
       </Card>
+
+      <Modal
+        open={!!previewing}
+        onOpenChange={(o) => !o && setPreviewing(null)}
+        title={previewing ? `Preview — ${previewing.name}` : ""}
+        description="The view below is rendered from the original Word file uploaded for this template. Generated contracts will mirror this exactly."
+        size="lg"
+        footer={
+          previewing?.sourceDocxPath ? (
+            <div className="flex items-center justify-between w-full">
+              <div className="text-xs text-slate-500">
+                Source: <code className="font-mono">{previewing.sourceDocxPath}</code>
+              </div>
+              <DocumentActions
+                src={uploadUrl(previewing.sourceDocxPath)}
+                mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                baseFilename={previewing.name.replace(/\s+/g, "_")}
+                printableSelector="#template-list-docx-preview .docx-preview-content"
+              />
+            </div>
+          ) : null
+        }
+      >
+        {previewing?.sourceDocxPath && (
+          <div id="template-list-docx-preview">
+            <DocxPreview src={uploadUrl(previewing.sourceDocxPath)} flat />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

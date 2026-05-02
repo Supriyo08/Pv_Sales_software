@@ -755,3 +755,117 @@ Total backend tests: 87 → **93** (15 files).
 6. Admin approves the generation in the Approvals queue.
 7. Agent downloads the generated `.docx`. Open in Word → identical layout to
    the original, with the placeholders replaced and the email address intact.
+
+---
+
+## Follow-up to Review 1.1 (round 2, 2026-05-02) — In-browser Word fidelity + actions
+
+**Why:** Edilteca asked for the template UI to look exactly like the source
+Word document (fonts, tables, headers/footers, embedded images, exact
+spacing) and for explicit Print, Download .docx, and Download PDF actions
+attached to every preview.
+
+### What changed
+
+**Frontend deps added:**
+- `docx-preview` (~200 KB raw, lazy-loaded only on pages that show a Word
+  preview) — parses the .docx zip in the browser and renders its layout
+  natively into an HTML/CSS canvas that mirrors Word.
+- `html2pdf.js` (dynamically imported; emits its own chunk ~265 KB gzip,
+  loaded only when a user clicks "Download PDF") — captures the rendered
+  preview into a PDF blob client-side, no server-side LibreOffice required.
+
+**New components:**
+- `frontend/src/components/DocxPreview.tsx` — drop-in `<DocxPreview src={url} />`.
+  Fetches the .docx, hands it to `docx-preview.renderAsync` with full
+  rendering options (`renderHeaders`, `renderFooters`, `renderFootnotes`,
+  `renderEndnotes`, `experimental: true`, `breakPages: true`). Loading +
+  error states surfaced in the UI.
+- `frontend/src/components/DocumentActions.tsx` — `<DocumentActions src=…
+  mimeType=… baseFilename=… printableSelector=… />`. Renders three buttons:
+  - **Print** — uses a hidden iframe to inject the rendered preview's HTML
+    (plus the host's stylesheets) and call `window.print()` so styles
+    survive the print dialog. Falls back to `window.open(src)` if no
+    `printableSelector` is provided.
+  - **Download .docx** — direct `<a download>` to the source file. Only
+    rendered when the source mime is .docx (or URL ends with .docx).
+  - **Download PDF** — for PDF sources, links straight to the file. For
+    .docx sources, dynamically imports html2pdf.js and captures the
+    `printableSelector` element into an A4 PDF.
+
+**Wiring:**
+- `frontend/src/pages/TemplatesAdmin.tsx`:
+  - Editor card now shows the `<DocxPreview>` of the source .docx for
+    .docx-uploaded templates (the TipTap editor is hidden by default and
+    revealed via "Show HTML body (used as fallback & analyzer source)").
+  - "Replace with a new .docx" button reuses the existing upload picker.
+  - List table gains a **Format** column (`Word .docx` badge for .docx
+    templates, `HTML` badge otherwise).
+  - List row "Preview" button (for .docx templates) opens a Modal with
+    `<DocxPreview flat />` + `<DocumentActions>` so admins can review,
+    print, or download without entering edit mode.
+- `frontend/src/pages/ContractDetail.tsx`:
+  - Generated-document banners (pending / approved) no longer carry the
+    download link — that role moves to a dedicated **Generated contract**
+    card directly below.
+  - The card shows a Word .docx / PDF format badge, `<DocumentActions>` in
+    the header, and `<DocxPreview>` (for .docx) or `<iframe>` (for PDF) as
+    the body. Customers see the contract laid out exactly as Word would
+    render it, ready to print or download.
+
+**CSS resets** (`frontend/src/index.css`):
+- Scoped `.docx-preview-host` styles isolate the rendered Word doc from
+  Tailwind's preflight (which would otherwise reset `<img>`, `<table>`,
+  and `<p>` styles that docx-preview relies on).
+- Slate-200 background outside the rendered "page" sections gives the
+  document-shadow visual cue.
+- `@media print` block hides the gray wrapper so prints come out clean.
+
+**API helper** (`frontend/src/lib/api.ts`):
+- `uploadUrl(relativePath)` resolves a backend `/uploads/...` path against
+  the API origin (stripping the `/v1` segment from `VITE_API_BASE`).
+  Used by every page that links to a stored .docx / PDF.
+
+### Where the preview / actions appear
+
+| Page | What renders | Actions toolbar |
+|---|---|---|
+| `/templates` (admin list) | Word badge for .docx templates · "Preview" row action opens a modal with the docx-preview | Print · Download .docx · Download PDF |
+| `/templates` (admin edit card, .docx template) | Inline docx-preview of the source Word file | Print · Download .docx · Download PDF |
+| `/templates/:id/render` (.docx template) | Inline docx-preview of the substituted Word document — fed by a new server endpoint that returns the rendered .docx as a Blob | Print · Download .docx · Download PDF |
+| `/templates/:id/render` (HTML template) | Existing plain-text textarea preview | Copy · Download .txt · Print · Download PDF |
+| `/contracts/:id` (after generation) | Inline docx-preview (.docx) or iframe (PDF) of the generated contract | Print · Download .docx (when .docx) · Download PDF |
+
+### New backend endpoint
+
+`POST /v1/templates/:id/render-docx` — body `{ values }`. Loads the template's
+`sourceDocxPath`, runs `templateService.renderDocx(buffer, values)`, streams
+the resulting `.docx` bytes back with the proper Word MIME type and an
+`inline; filename="<template>.docx"` Content-Disposition. The standalone
+`/templates/:id/render` page consumes this as a Blob and feeds it into
+`<DocxPreview>` for live in-browser rendering.
+
+### Limitations
+
+- **PDF export quality**: html2pdf rasterises the rendered DOM via
+  html2canvas. Fine for text-heavy contracts; complex tables with bleed-edge
+  borders may have minor pagination artifacts. For pixel-perfect PDF, open
+  the .docx in Word and use its native "Save as PDF" — the .docx download
+  button is right there for that flow.
+- **Server-side PDF** (LibreOffice headless `soffice --convert-to pdf`)
+  remains an option for v1.3 if Edilteca wants identical-to-Word PDFs
+  without the Word app installed.
+
+### Files touched
+
+- **NEW:** `frontend/src/components/DocxPreview.tsx`
+- **NEW:** `frontend/src/components/DocumentActions.tsx`
+- `frontend/src/pages/TemplatesAdmin.tsx` — editor card branches on
+  `sourceDocxPath`; list table format column + preview modal
+- `frontend/src/pages/ContractDetail.tsx` — generated contract card with
+  inline preview + action toolbar
+- `frontend/src/lib/api.ts` — `uploadUrl()` helper
+- `frontend/src/lib/api-types.ts` — `ContractTemplate.sourceDocxPath` (added
+  earlier)
+- `frontend/src/index.css` — `.docx-preview-host` scoped styles + print rules
+- `frontend/package.json` — `docx-preview`, `html2pdf.js`

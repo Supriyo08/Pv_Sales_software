@@ -35,13 +35,16 @@ export function createApp() {
     res.json({ status: "ok", mongo: mongoOk ? "up" : "down" });
   });
 
-  // Serve uploaded files (signed contract scans, etc.) — see document.controller.upload
+  // Serve uploaded files (signed contract scans, generated contracts, source
+  // .docx templates) — see document.controller.upload + template.service.
+  // `fallthrough: true` lets unmatched paths fall through to the API + global
+  // notFound handler, which returns a clean 404 instead of being swallowed by
+  // the catch-all errorHandler as a 500.
   app.use(
     "/uploads",
     express.static(path.resolve(process.cwd(), "uploads"), {
-      // Prevent directory listing; only serve known files.
       index: false,
-      fallthrough: false,
+      fallthrough: true,
     })
   );
 

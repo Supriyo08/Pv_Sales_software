@@ -21,6 +21,12 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     res.status(err.status).json({ error: err.message, details: err.details });
     return;
   }
+  // Filesystem "not found" errors from static middleware shouldn't surface as 500.
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "ENOENT") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   logger.error({ err }, "Unhandled error");
   res.status(500).json({ error: "Internal server error" });
 };

@@ -5,6 +5,21 @@ export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? "http://localhost:4000/v1",
 });
 
+/**
+ * Build an absolute URL to a backend-served upload (e.g. .docx, generated PDF,
+ * signed scan). The backend serves files at `/uploads/...` (no `/v1`), so we
+ * resolve them against the API base's origin.
+ */
+export function uploadUrl(relative: string | null | undefined): string {
+  if (!relative) return "";
+  if (/^https?:\/\//.test(relative)) return relative;
+  const base = (api.defaults.baseURL ?? "http://localhost:4000/v1").replace(
+    /\/v1\/?$/,
+    ""
+  );
+  return `${base}${relative.startsWith("/") ? "" : "/"}${relative}`;
+}
+
 api.interceptors.request.use((config) => {
   const token = useAuth.getState().accessToken;
   if (token) config.headers.Authorization = `Bearer ${token}`;
