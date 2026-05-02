@@ -41,7 +41,13 @@ export function DocxPreview({ src, className = "", flat = false }: Props) {
           inWrapper: true,
           ignoreWidth: false,
           ignoreHeight: false,
-          ignoreFonts: false,
+          // Per follow-up (round 3, 2026-05-02): the source .docx references
+          // Italian display fonts that aren't installed system-wide, so the
+          // browser was picking a serif fallback that broke the footer's
+          // alignment + size. Ignoring the embedded font references lets our
+          // CSS cascade force Arial everywhere — visually matches Word's
+          // default fallback when the document opens on a fontless machine.
+          ignoreFonts: true,
           breakPages: true,
           ignoreLastRenderedPageBreak: true,
           experimental: true,

@@ -63,10 +63,20 @@ button {
 }
 
 .docx-preview-host .docx-rendered {
-  font-family: "Calibri", "Liberation Sans", Arial, sans-serif;
+  font-family: Arial, "Liberation Sans", "Helvetica Neue", Helvetica, sans-serif;
   color: #0f172a;
   /* Center the rendered "pages" with breathing room */
   padding: 1.5rem 1rem;
+}
+
+/* Per follow-up (round 3, 2026-05-02): force the Arial cascade onto every
+   descendant so .docx footers/headers don't fall back to a random serif when
+   the embedded font isn't installed. Inline `font-family` declarations on
+   individual runs are left intact (they win via specificity), but anything
+   inheriting from the wrapper now gets Arial. */
+.docx-preview-host .docx-rendered,
+.docx-preview-host .docx-rendered * {
+  font-family: Arial, "Liberation Sans", "Helvetica Neue", Helvetica, sans-serif !important;
 }
 
 .docx-preview-host .docx-rendered section.docx {

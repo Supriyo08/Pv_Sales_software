@@ -573,34 +573,193 @@ upload here.`}</pre>
         </div>
       </Card>
 
-      <Modal
-        open={!!previewing}
-        onOpenChange={(o) => !o && setPreviewing(null)}
-        title={previewing ? `Preview — ${previewing.name}` : ""}
-        description="The view below is rendered from the original Word file uploaded for this template. Generated contracts will mirror this exactly."
-        size="lg"
-        footer={
-          previewing?.sourceDocxPath ? (
-            <div className="flex items-center justify-between w-full">
-              <div className="text-xs text-slate-500">
-                Source: <code className="font-mono">{previewing.sourceDocxPath}</code>
-              </div>
-              <DocumentActions
-                src={uploadUrl(previewing.sourceDocxPath)}
-                mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                baseFilename={previewing.name.replace(/\s+/g, "_")}
-                printableSelector="#template-list-docx-preview .docx-preview-content"
-              />
-            </div>
-          ) : null
-        }
-      >
-        {previewing?.sourceDocxPath && (
-          <div id="template-list-docx-preview">
-            <DocxPreview src={uploadUrl(previewing.sourceDocxPath)} flat />
-          </div>
-        )}
-      </Modal>
+      <TemplatePreviewModal
+        template={previewing}
+        onClose={() => setPreviewing(null)}
+      />
     </div>
+  );
+}
+
+// ─── Preview-with-fill modal ────────────────────────────────────────────────
+// Per follow-up to Review 1.1 (round 3, 2026-05-02): the preview modal now
+// shows the placeholder fields the analyzer detected and lets the user render
+// the .docx with their values inline — no need to leave the page.
+//
+// Two preview states:
+//   - default → source .docx (no substitutions)
+//   - rendered → blob from POST /v1/templates/:id/render-docx with the
+//     entered values (placeholders not provided fall back to "[[tag]]")
+//
+// All toolbar actions (Print / Download .docx / Download PDF) operate on
+// whichever preview is currently shown.
+
+import { useEffect } from "react";
+
+function TemplatePreviewModal({
+  template,
+  onClose,
+}: {
+  template: ContractTemplate | null;
+  onClose: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [renderedUrl, setRenderedUrl] = useState<string | null>(null);
+
+  // Reset when the modal opens for a different template.
+  useEffect(() => {
+    setValues({});
+    if (renderedUrl) URL.revokeObjectURL(renderedUrl);
+    setRenderedUrl(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template?._id]);
+
+  // Cleanup blob on unmount.
+  useEffect(() => {
+    return () => {
+      if (renderedUrl) URL.revokeObjectURL(renderedUrl);
+    };
+  }, [renderedUrl]);
+
+  const renderDocxMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.post(
+        `/templates/${template!._id}/render-docx`,
+        { values },
+        { responseType: "blob" }
+      );
+      const blob = res.data as Blob;
+      const url = URL.createObjectURL(blob);
+      if (renderedUrl) URL.revokeObjectURL(renderedUrl);
+      setRenderedUrl(url);
+      return url;
+    },
+  });
+
+  if (!template) {
+    return (
+      <Modal open={false} onOpenChange={onClose} title="">
+        <></>
+      </Modal>
+    );
+  }
+
+  const placeholders = template.analysis?.placeholders ?? [];
+  const sourceUrl = template.sourceDocxPath ? uploadUrl(template.sourceDocxPath) : "";
+  const previewUrl = renderedUrl ?? sourceUrl;
+  const showingRendered = !!renderedUrl;
+  const baseFilename =
+    template.name.replace(/\s+/g, "_") +
+    (showingRendered ? "-filled" : "");
+
+  return (
+    <Modal
+      open={!!template}
+      onOpenChange={(o) => !o && onClose()}
+      title={`Preview — ${template.name}`}
+      description={
+        showingRendered
+          ? "Showing the substituted Word document. Print or download to share with the customer."
+          : "Showing the original Word file. Fill placeholders on the left and click Render to substitute."
+      }
+      size="xl"
+      footer={
+        previewUrl ? (
+          <div className="flex items-center justify-between w-full gap-3 flex-wrap">
+            <div className="text-xs text-slate-500">
+              {showingRendered ? (
+                <span className="text-emerald-700 font-medium">
+                  Rendered with {Object.values(values).filter(Boolean).length}/
+                  {placeholders.length} values
+                </span>
+              ) : (
+                <>
+                  Source:{" "}
+                  <code className="font-mono">{template.sourceDocxPath}</code>
+                </>
+              )}
+            </div>
+            <DocumentActions
+              src={previewUrl}
+              mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              baseFilename={baseFilename}
+              printableSelector="#template-list-docx-preview .docx-preview-content"
+            />
+          </div>
+        ) : null
+      }
+    >
+      {!template.sourceDocxPath ? (
+        <p className="text-sm text-slate-500">
+          This template has no .docx source — open the standalone render page
+          for the HTML/text preview.
+        </p>
+      ) : (
+        <div className="grid lg:grid-cols-[280px_1fr] gap-4">
+          <div className="space-y-3">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Fill placeholders ({placeholders.length})
+            </div>
+            {placeholders.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                This template has no <code>@@placeholders</code> — the preview
+                shows it as-is.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+                  {placeholders.map((p) => (
+                    <Field key={p.tag} label={`@@${p.tag}`}>
+                      <Input
+                        value={values[p.tag] ?? ""}
+                        onChange={(e) =>
+                          setValues((s) => ({
+                            ...s,
+                            [p.tag]: e.target.value,
+                          }))
+                        }
+                        placeholder={`Value for @@${p.tag}`}
+                      />
+                    </Field>
+                  ))}
+                </div>
+                <div className="flex flex-col gap-2 pt-2 border-t border-slate-200">
+                  <Button
+                    onClick={() => renderDocxMutation.mutate()}
+                    loading={renderDocxMutation.isPending}
+                  >
+                    {showingRendered ? "Re-render" : "Render with values"}
+                  </Button>
+                  {showingRendered && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (renderedUrl) URL.revokeObjectURL(renderedUrl);
+                        setRenderedUrl(null);
+                      }}
+                    >
+                      Show source
+                    </Button>
+                  )}
+                  <p className="text-[11px] text-slate-500">
+                    Empty fields render as <code>[[tag]]</code> sentinels in the
+                    output so you can spot what's missing.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div id="template-list-docx-preview" className="min-w-0">
+            {showingRendered && (
+              <div className="mb-2 inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700">
+                <FileType2 className="size-3" /> Rendered preview
+              </div>
+            )}
+            <DocxPreview src={previewUrl} flat />
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
