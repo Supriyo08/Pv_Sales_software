@@ -9,6 +9,8 @@ router.use(requireAuth);
 router.get("/", ctrl.list);
 router.post("/", ctrl.create);
 router.get("/:id", ctrl.get);
+// Per Review 1.2 (2026-05-04).
+router.get("/:id/history", ctrl.history);
 router.post("/:id/sign", ctrl.sign); // agent action — signing the contract with the customer
 router.post("/:id/upload-signed", ctrl.attachSignedScan); // agent uploads signed scan
 router.post("/:id/approve", requireRole("ADMIN", "AREA_MANAGER"), ctrl.approve);

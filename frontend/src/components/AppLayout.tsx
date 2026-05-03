@@ -96,7 +96,8 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       {
         to: "/admin/contract-edit-requests",
-        label: "Contract edits",
+        // Per Review 1.2 (2026-05-04) — clearer naming.
+        label: "Contracts to be approved",
         icon: PencilLine,
         roles: ["ADMIN", "AREA_MANAGER"],
         badgeFetcher: pendingCounts.contractEdits,

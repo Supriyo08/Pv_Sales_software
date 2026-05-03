@@ -23,6 +23,41 @@ const solutionVersionSchema = new Schema(
     boundToUserIds: { type: [Schema.Types.ObjectId], default: [], ref: "User" },
     boundToTerritoryIds: { type: [Schema.Types.ObjectId], default: [], ref: "Territory" },
     boundToCustomerIds: { type: [Schema.Types.ObjectId], default: [], ref: "Customer" },
+    // Per Review 1.2 (2026-05-04): pricing matrix mirroring the Figma board.
+    // Each row overrides final price + commissions for a specific
+    // (paymentMethod × installmentPlan × advance-range) combination. Empty
+    // numeric fields fall back to the version's basePriceCents/agentBp/managerBp.
+    // `*Pct` fields are alternative inputs expressed as percentages of the base
+    // — at apply time the resolver converts them into cents/bp.
+    pricingMatrix: {
+      type: [
+        new Schema(
+          {
+            label: { type: String, default: "" },
+            paymentMethod: {
+              type: String,
+              enum: ["ONE_TIME", "ADVANCE_INSTALLMENTS", "FULL_INSTALLMENTS"],
+              required: true,
+            },
+            installmentPlanId: {
+              type: Schema.Types.ObjectId,
+              ref: "InstallmentPlan",
+              default: null,
+            },
+            advanceMinCents: { type: Number, default: null },
+            advanceMaxCents: { type: Number, default: null },
+            finalPriceCents: { type: Number, default: null },
+            finalPricePct: { type: Number, default: null },
+            agentBp: { type: Number, default: null, min: 0, max: 10_000 },
+            agentPct: { type: Number, default: null },
+            managerBp: { type: Number, default: null, min: 0, max: 10_000 },
+            managerPct: { type: Number, default: null },
+          },
+          { _id: true, timestamps: false }
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );

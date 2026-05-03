@@ -22,6 +22,7 @@ import { Modal } from "../components/ui/Modal";
 import { Input, Textarea, Select, Field } from "../components/ui/Input";
 import { DocxPreview } from "../components/DocxPreview";
 import { DocumentActions } from "../components/DocumentActions";
+import { ContractHistory } from "../components/ContractHistory";
 import { formatCents, formatDate, formatDateTime } from "../lib/format";
 import { useRole } from "../store/auth";
 import type {
@@ -425,43 +426,59 @@ export function ContractDetail() {
         </Card>
       )}
 
-      {generatedDoc && (
-        <Card padding={false} className="mb-6">
-          <div className="px-6 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <h3 className="font-semibold flex items-center gap-2">
-                Generated contract
-                {generatedDoc.mimeType?.includes("word") ? (
-                  <Badge tone="brand">Word .docx</Badge>
-                ) : (
-                  <Badge tone="neutral">PDF</Badge>
-                )}
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Rendered exactly as the source — print or download for the customer
-                signature.
-              </p>
+      {generatedDoc && (() => {
+        // Per Review 1.2 (2026-05-04): an agent can VIEW the generated contract
+        // and request edits, but the print/download toolbar stays hidden until
+        // an admin/AM approves the generated PDF. Admins + AMs always see the
+        // toolbar so they can review the document offline if needed.
+        const isPrivileged = role === "ADMIN" || role === "AREA_MANAGER";
+        const canShowActions = !!contract.generationApprovedAt || isPrivileged;
+        return (
+          <Card padding={false} className="mb-6">
+            <div className="px-6 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2">
+                  Generated contract
+                  {generatedDoc.mimeType?.includes("word") ? (
+                    <Badge tone="brand">Word .docx</Badge>
+                  ) : (
+                    <Badge tone="neutral">PDF</Badge>
+                  )}
+                  {!contract.generationApprovedAt && (
+                    <Badge tone="amber">awaiting approval</Badge>
+                  )}
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {canShowActions
+                    ? "Rendered exactly as the source — print or download for the customer signature."
+                    : "View the rendered contract below and request edits if needed. Print + download unlock once admin approves."}
+                </p>
+              </div>
+              {canShowActions ? (
+                <DocumentActions
+                  src={uploadUrl(generatedDoc.url)}
+                  mimeType={generatedDoc.mimeType ?? ""}
+                  baseFilename={`contract-${contract._id.slice(-8)}`}
+                  printableSelector="#contract-generated-preview .docx-preview-content"
+                />
+              ) : (
+                <Badge tone="amber">Print/download locked until admin approves</Badge>
+              )}
             </div>
-            <DocumentActions
-              src={uploadUrl(generatedDoc.url)}
-              mimeType={generatedDoc.mimeType ?? ""}
-              baseFilename={`contract-${contract._id.slice(-8)}`}
-              printableSelector="#contract-generated-preview .docx-preview-content"
-            />
-          </div>
-          <div id="contract-generated-preview">
-            {generatedDoc.mimeType?.includes("word") ? (
-              <DocxPreview src={uploadUrl(generatedDoc.url)} flat />
-            ) : (
-              <iframe
-                src={uploadUrl(generatedDoc.url)}
-                title="Generated contract PDF"
-                className="w-full h-[80vh] border-0"
-              />
-            )}
-          </div>
-        </Card>
-      )}
+            <div id="contract-generated-preview">
+              {generatedDoc.mimeType?.includes("word") ? (
+                <DocxPreview src={uploadUrl(generatedDoc.url)} flat />
+              ) : (
+                <iframe
+                  src={uploadUrl(generatedDoc.url)}
+                  title="Generated contract PDF"
+                  className="w-full h-[80vh] border-0"
+                />
+              )}
+            </div>
+          </Card>
+        );
+      })()}
 
       {pendingEdit && (
         <Card className="mb-6 border-amber-200 bg-amber-50">
@@ -763,6 +780,20 @@ export function ContractDetail() {
             </TBody>
           </Table>
         )}
+      </Card>
+
+      {/* Per Review 1.2 (2026-05-04): full chronological history of the contract. */}
+      <Card padding={false} className="mt-6">
+        <div className="px-6 py-4 border-b border-slate-200">
+          <h3 className="font-semibold">History</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Every event from creation through approvals, commissions, installation
+            milestones and reversals — auto-refreshes every 30 s.
+          </p>
+        </div>
+        <div className="px-8 py-6">
+          <ContractHistory contractId={id!} />
+        </div>
       </Card>
 
       <Modal

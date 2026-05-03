@@ -8,6 +8,8 @@ router.use(requireAuth);
 router.get("/solutions", ctrl.listSolutions);
 router.post("/solutions", requireRole("ADMIN"), ctrl.createSolution);
 router.get("/solutions/:id", ctrl.getSolution);
+// Per Review 1.2 (2026-05-04).
+router.get("/solutions/:id/dashboard", ctrl.solutionDashboard);
 // Per Review 1.1 §3: deactivate / activate / archive whole solution.
 router.patch("/solutions/:id/active", requireRole("ADMIN"), ctrl.setSolutionActive);
 router.post("/solutions/:id/archive", requireRole("ADMIN"), ctrl.archiveSolution);

@@ -203,4 +203,19 @@ export const cancel: RequestHandler = async (req, res, next) => {
   }
 };
 
+// Per Review 1.2 (2026-05-04): chronological history of every event in the
+// contract's lifecycle. Honours the same scope rules as `get` so agents only
+// see history for their own contracts.
+export const history: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const scope = await buildScope(req.user);
+    await contractService.getById(req.params.id!, scope);
+    const events = await contractService.history(req.params.id!);
+    res.json(events);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export { CONTRACT_STATUSES };

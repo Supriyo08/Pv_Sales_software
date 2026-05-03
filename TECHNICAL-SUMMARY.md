@@ -845,6 +845,190 @@ the resulting `.docx` bytes back with the proper Word MIME type and an
 `/templates/:id/render` page consumes this as a Blob and feeds it into
 `<DocxPreview>` for live in-browser rendering.
 
+---
+
+# v1.3 — Review 1.2 (May 2026)
+
+**Source spec:** Review 1.2 — SolarNetwork — Dev. Supriyo — Recr. Uju, plus
+Edilteca's two Figma boards (pricing matrix + payment ledger) referenced in
+the document.
+
+Twelve features land in v1.3, broken into four clusters: contracts, solutions,
+templates, and the new financial views (payment ledger + report drill-down).
+
+## Contracts
+
+### Edit-request whitelist now covers every editable field
+- **Files:** `backend/src/modules/contracts/contract.service.ts` (`EditableContractFields`,
+  `applyEdit`), `contract-edit-requests/contract-edit-request.{service,controller}.ts`,
+  `frontend/src/lib/api-types.ts` (`ContractEditRequest.changes`).
+- Whitelist keys: `amountCents`, `currency`, `paymentMethod`, `advanceCents`,
+  `installmentPlanId`, `solutionVersionId`, `agentId`, `customerId`, `leadId`.
+- `applyEdit` re-validates referenced agent/customer/lead/version + advance
+  range + price range before persisting; emits `contract.updated` so the
+  commission handler recomputes.
+
+### Print/download gated on admin approval (per agent)
+- **File:** `frontend/src/pages/ContractDetail.tsx` (Generated contract card).
+- Agents see the `<DocxPreview>` and the "Request edit" / "Re-generate" actions
+  but the `<DocumentActions>` toolbar is replaced by an "awaiting approval"
+  badge until `contract.generationApprovedAt` is set. Admin/AM see the full
+  toolbar always (so they can review the PDF/DOCX before approval).
+
+### Sidebar: "Contracts to be approved"
+- **File:** `frontend/src/components/AppLayout.tsx`.
+- Renamed from "Contract edits" per Review 1.2 §"Contracts edit section".
+
+### Contract history timeline
+- **Backend:** `contract.service.history(id)` aggregates a chronological event
+  stream from Contract intrinsic dates, Installation milestones, Commission
+  ledger (active + superseded), ContractEditRequest, AdvancePayAuthorization,
+  ReversalReview. Endpoint: `GET /v1/contracts/:id/history` (scope-aware).
+- **Frontend:** `frontend/src/components/ContractHistory.tsx` — vertical
+  timeline with per-event icons + tones, refetch every 30s. Wired into the new
+  "History" card on `ContractDetail`.
+
+## Templates
+
+### Archive + restore
+- **Backend:** `template.service.list({ includeArchived })`, new
+  `template.service.restore(id)`, controllers `restore` + listing tweak,
+  route `POST /:id/restore`.
+- **Frontend:** "Show archived" toggle in TemplatesAdmin header; per-row
+  "Archive" → "Restore" with greyed-out styling for archived rows.
+
+### Version history (audit-driven)
+- **Backend:** new `audit.listForTarget(targetType, targetId)` helper +
+  endpoint `GET /v1/templates/:id/history` returning every audit entry.
+- **Frontend:** `frontend/src/components/TemplateHistoryModal.tsx` — vertical
+  timeline grouping `template.create`, `template.update`, `template.upload`,
+  `template.delete`, `template.restore`. For updates it computes a per-field
+  diff between the entry's `before`/`after` snapshots and renders red/green
+  panels per changed field (name, description, active, solutionIds, body,
+  sourceDocxPath).
+
+## Solutions
+
+### Pricing matrix (per Figma)
+- **Backend model:** `solution-version.model.ts` — `pricingMatrix` array of
+  rows `{ label, paymentMethod, installmentPlanId, advanceMinCents,
+  advanceMaxCents, finalPriceCents | finalPricePct, agentBp | agentPct,
+  managerBp | managerPct }`. Each row overrides version defaults for one
+  (paymentMethod × plan × advance range) combination; null fields fall back to
+  the version's basePriceCents/agentBp/managerBp.
+- **Backend resolver:** `solution.service.resolvePricing(version, ctx)` walks
+  the matrix and returns the effective `{ finalPriceCents, agentBp, managerBp }`
+  for a given context. `*Pct` values resolve against the version's base.
+- **Frontend editor:** `frontend/src/components/PricingMatrixEditor.tsx` — fast
+  inline editor mirroring the Figma layout (Full Payment, Advance + Installment,
+  Full Installment groups). Per-cell mode toggle: absolute amount (€/bp) vs
+  percentage of base. Live-computed "Effective" badges per row. Mounted on
+  `SolutionDetail` as the "Pricing matrix" card right under the version header.
+
+### Per-solution dashboard (summary + recent contracts)
+- **Backend:** `solution.service.dashboard(solutionId, { agentIds })` aggregates
+  contract status + totals across every version of the solution; returns
+  recent 20 contracts. Endpoint: `GET /v1/catalog/solutions/:id/dashboard`
+  (scope-aware via `req.scope`).
+- **Frontend:** "Contracts on this solution" card on `SolutionDetail` with 4
+  stat tiles (total contracts/amount/signed/drafts) + a table of recent rows.
+
+### Installment plans visibility from SolutionDetail
+- **Frontend:** "Available installment plans" card on `SolutionDetail`
+  showing linked plans (chips with detach button), universal plans (chips),
+  and an "Other plans (click to attach)" picker. Admin can attach/detach via
+  PATCH on the plan's `solutionIds` array.
+
+## Payments — current-situation summary + double-entry ledger
+
+### Summary tile (top of Payments)
+- **Backend:** `payment.service.summary({ userIds })` → `{ totals, byUser }`
+  with earned / reversed / disbursed / refunded / outstanding cents.
+- **Frontend:** "Current situation" card with 5 stat tiles + (admin only) a
+  per-user breakdown table. Click a user row to filter the ledger.
+
+### Double-entry ledger
+- **Backend:** `payment.service.ledger({ userIds, fromPeriod, toPeriod, periods })`.
+  Walks Commission rows (positive on `generatedAt`, negative on `supersededAt`)
+  + PaymentTransaction rows (PAY → negative on `executedAt`, REFUND → positive)
+  and computes a per-user running balance. Endpoint: `GET /v1/payments/ledger`
+  (scope-aware: agents/AMs see only their own; admins can pass `?userId=…`).
+- **Frontend:** `frontend/src/components/PaymentLedger.tsx` — chronological
+  table with When · Event · Description · (User, admin only) · Signed amount ·
+  Running balance. Filter bar: user (admin only), from/to period, multi-select
+  period chips. Reset button clears everything.
+
+## Reports — drill-down + multi-period filter
+
+### Multi-period filter
+- **Backend:** `agent-earnings` endpoint accepts `?periods=p1,p2,…` (single
+  `?period=…` continues to work for back-compat). Reflected in the periods
+  filter that all aggregate reports inherit.
+- **Frontend:** new `<PeriodChips>` widget in `Reports.tsx` — chip-style
+  multi-select with a "Recent" quick-pick (last 6 months) plus free-text
+  add. When no period filter is set the page shows the full history (per
+  Review 1.2 explicit requirement).
+
+### Drill-down (click a row)
+- **Backend:** new endpoints
+  - `GET /v1/reports/agent-earnings/:userId` — every commission row backing
+    the agent's aggregated total + the corresponding contract metadata.
+  - `GET /v1/reports/network-performance/:managerId` — agents in the network
+    + their signed contracts (period-filtered via signedAt month windows).
+- **Frontend:** clicking an agent row in "Agent earnings" or an AM row in
+  "Network performance" opens a wide modal (`<AgentDrillDown>` / `<NetworkDrillDown>`)
+  with the underlying detail rows. Each contract is a deep-link to
+  `/contracts/:id`.
+
+## Files touched (high level)
+
+**Backend** (`backend/src/`):
+- `modules/contracts/contract.service.ts` — `applyEdit` whitelist + `history()`
+- `modules/contracts/contract.controller.ts` + `.routes.ts` — `history`
+- `modules/contract-edit-requests/contract-edit-request.{service,controller}.ts` — wider whitelist
+- `modules/templates/template.{service,controller,routes}.ts` — list `?includeArchived`,
+  `restore`, `history`
+- `modules/audit/audit.service.ts` — `listForTarget`
+- `modules/catalog/solution.service.ts` — `dashboard`, `resolvePricing`,
+  `updateVersion(pricingMatrix)`
+- `modules/catalog/solution-version.model.ts` — `pricingMatrix`
+- `modules/catalog/catalog.controller.ts` + `.routes.ts` — dashboard endpoint,
+  pricing matrix schema
+- `modules/payments/payment.service.ts` — `ledger`, `summary`
+- `modules/payments/payment.controller.ts` + `.routes.ts` — `ledger`, `summary`
+- `modules/reports/report.service.ts` — multi-period support, `agentEarningsDetail`,
+  `networkPerformanceDetail`
+- `modules/reports/report.controller.ts` + `.routes.ts` — drill-down endpoints
+
+**Frontend** (`frontend/src/`):
+- `pages/ContractDetail.tsx` — print/download gating, History card
+- `pages/Reports.tsx` — multi-period filter, drill-down modals
+- `pages/Payments.tsx` — Ledger + summary integration
+- `pages/SolutionDetail.tsx` — Pricing matrix + linked plans + dashboard
+- `pages/TemplatesAdmin.tsx` — Archive/Restore + Show archived + History button
+- `components/AppLayout.tsx` — sidebar rename
+- `components/ContractHistory.tsx` — NEW
+- `components/PaymentLedger.tsx` — NEW
+- `components/PricingMatrixEditor.tsx` — NEW
+- `components/TemplateHistoryModal.tsx` — NEW
+- `lib/api-types.ts` — `ContractHistoryEvent`, `SolutionPricingMatrixRow`,
+  expanded `ContractEditRequest.changes`
+
+## Verification (v1.3)
+
+- **Backend tests:** 93 / 93 passing (no regressions).
+- **Frontend build:** clean — `tsc -b` + `vite build` 1.36 MB raw / 398 KB gzip.
+
+## Deferred for v1.4
+
+- Template version history with full body diff (currently shows truncated
+  snippets — full HTML diff view + side-by-side render is the next step).
+- Pricing matrix → ContractNew autofill (resolver is in place; the form
+  currently still uses the version defaults — wiring the resolver into the
+  agent's create flow is the next step).
+- Inline period text-input in Reports for arbitrary date ranges (currently
+  YYYY-MM only — daily/weekly granularity for executive views).
+
 ### Limitations
 
 - **PDF export quality**: html2pdf rasterises the rendered DOM via

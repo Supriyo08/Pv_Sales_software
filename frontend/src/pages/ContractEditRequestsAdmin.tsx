@@ -44,8 +44,8 @@ export function ContractEditRequestsAdmin() {
   return (
     <div>
       <PageHeader
-        title="Contract edit requests"
-        description="Agents request edits to signed contracts; admin or area manager applies them after review."
+        title="Contracts to be approved"
+        description="Agents request edits or generate new contract versions; admin or area manager reviews and approves before they take effect."
         action={
           <div className="flex gap-2">
             {STATUS_OPTIONS.map((s) => (

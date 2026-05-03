@@ -102,6 +102,60 @@ export const addTransaction: RequestHandler = async (req, res, next) => {
   }
 };
 
+// Per Review 1.2 (2026-05-04): chronological ledger + summary endpoints.
+// Both honour role-based scoping: agents/AMs see only their own rows; admins
+// see the whole company and can pass `userId` to drill down.
+export const ledger: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const { buildScope } = await import("../../lib/scope");
+    const scope = await buildScope(req.user);
+    const requestedUserId =
+      typeof req.query.userId === "string" ? req.query.userId : undefined;
+    const fromPeriod =
+      typeof req.query.fromPeriod === "string" ? req.query.fromPeriod : undefined;
+    const toPeriod =
+      typeof req.query.toPeriod === "string" ? req.query.toPeriod : undefined;
+    const periods =
+      typeof req.query.periods === "string"
+        ? (req.query.periods as string).split(",").filter(Boolean)
+        : undefined;
+
+    let userIds: string[] | undefined;
+    if (scope.isAdmin) {
+      userIds = requestedUserId ? [requestedUserId] : undefined;
+    } else {
+      // Non-admins always scoped to themselves (or themselves + their network
+      // for area managers — the AM "earns" their own commissions only here).
+      userIds = [scope.selfId];
+    }
+    res.json(
+      await paymentService.ledger({ userIds, fromPeriod, toPeriod, periods })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const summary: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const { buildScope } = await import("../../lib/scope");
+    const scope = await buildScope(req.user);
+    const requestedUserId =
+      typeof req.query.userId === "string" ? req.query.userId : undefined;
+    let userIds: string[] | undefined;
+    if (scope.isAdmin) {
+      userIds = requestedUserId ? [requestedUserId] : undefined;
+    } else {
+      userIds = [scope.selfId];
+    }
+    res.json(await paymentService.summary({ userIds }));
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const cancel: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");

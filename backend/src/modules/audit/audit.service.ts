@@ -58,3 +58,19 @@ export async function log(input: AuditInput): Promise<void> {
     logger.error({ err, input }, "Failed to write audit log");
   }
 }
+
+/**
+ * Per Review 1.2 (2026-05-04): retrieve every audit entry that touched a given
+ * target (e.g. a contract template) — used to build a per-record version
+ * history. Returns chronological ascending so the UI can render a timeline
+ * + diff between successive `after` snapshots.
+ */
+export async function listForTarget(
+  targetType: string,
+  targetId: string
+): Promise<unknown[]> {
+  return AuditLog.find({ targetType, targetId })
+    .sort({ createdAt: 1 })
+    .limit(500)
+    .lean();
+}

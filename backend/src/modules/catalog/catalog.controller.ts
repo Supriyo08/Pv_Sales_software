@@ -34,6 +34,26 @@ const createVersionSchema = z.object({
   boundToCustomerIds: z.array(objectId).optional(),
 });
 
+// Per Review 1.2 (2026-05-04): pricing matrix row schema. Mirrors the SolutionVersion
+// model (see solution-version.model.ts).
+const pricingMatrixRowSchema = z.object({
+  label: z.string().max(120).optional(),
+  paymentMethod: z.enum([
+    "ONE_TIME",
+    "ADVANCE_INSTALLMENTS",
+    "FULL_INSTALLMENTS",
+  ]),
+  installmentPlanId: objectId.nullish(),
+  advanceMinCents: z.number().int().min(0).nullish(),
+  advanceMaxCents: z.number().int().min(0).nullish(),
+  finalPriceCents: z.number().int().min(0).nullish(),
+  finalPricePct: z.number().min(0).max(1000).nullish(),
+  agentBp: z.number().int().min(0).max(10_000).nullish(),
+  agentPct: z.number().min(0).max(100).nullish(),
+  managerBp: z.number().int().min(0).max(10_000).nullish(),
+  managerPct: z.number().min(0).max(100).nullish(),
+});
+
 const updateVersionSchema = z.object({
   active: z.boolean().optional(),
   minPriceCents: z.number().int().min(0).nullish(),
@@ -41,6 +61,7 @@ const updateVersionSchema = z.object({
   boundToUserIds: z.array(objectId).optional(),
   boundToTerritoryIds: z.array(objectId).optional(),
   boundToCustomerIds: z.array(objectId).optional(),
+  pricingMatrix: z.array(pricingMatrixRowSchema).optional(),
 });
 
 const createBonusRuleSchema = z.object({
@@ -141,6 +162,22 @@ export const unarchiveSolution: RequestHandler = async (req, res, next) => {
 export const getSolution: RequestHandler = async (req, res, next) => {
   try {
     res.json(await solutions.getSolution(req.params.id!));
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.2 (2026-05-04): per-solution dashboard with summary + recent.
+// Scope is enforced by passing the requesting user's visible agents.
+export const solutionDashboard: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const { buildScope } = await import("../../lib/scope");
+    const scope = await buildScope(req.user);
+    const opts = scope.isAdmin
+      ? {}
+      : { agentIds: scope.agentIds };
+    res.json(await solutions.dashboard(req.params.id!, opts));
   } catch (err) {
     next(err);
   }

@@ -1,17 +1,23 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Power } from "lucide-react";
+import { Plus, Power, Calendar, FileSignature, X, Check, Grid3X3 } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Field, Input } from "../components/ui/Input";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
-import { Badge } from "../components/ui/Badge";
-import { formatCents, formatDate, formatBp } from "../lib/format";
+import { Badge, StatusBadge } from "../components/ui/Badge";
+import { PricingMatrixEditor } from "../components/PricingMatrixEditor";
+import { formatCents, formatDate, formatDateTime, formatBp } from "../lib/format";
 import { useRole } from "../store/auth";
-import type { Solution, SolutionVersion } from "../lib/api-types";
+import type {
+  Contract,
+  InstallmentPlan,
+  Solution,
+  SolutionVersion,
+} from "../lib/api-types";
 
 export function SolutionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -36,6 +42,55 @@ export function SolutionDetail() {
   const { data: versions = [] } = useQuery<SolutionVersion[]>({
     queryKey: ["solution-versions", id],
     queryFn: async () => (await api.get(`/catalog/solutions/${id}/versions`)).data,
+    enabled: !!id,
+  });
+
+  // Per Review 1.2 (2026-05-04): linked installment plans + per-solution
+  // dashboard. Admins manage plan attachments inline; agents/AMs see read-only.
+  const { data: allPlans = [] } = useQuery<InstallmentPlan[]>({
+    queryKey: ["installment-plans", "all"],
+    queryFn: async () => (await api.get("/catalog/installment-plans")).data,
+    enabled: !!id,
+  });
+  const linkedPlans = allPlans.filter(
+    (p) => p.solutionIds && p.solutionIds.includes(id!)
+  );
+  const universalPlans = allPlans.filter(
+    (p) => !p.solutionIds || p.solutionIds.length === 0
+  );
+
+  const togglePlanLink = useMutation({
+    mutationFn: async (input: { plan: InstallmentPlan; link: boolean }) => {
+      const next = input.link
+        ? Array.from(new Set([...(input.plan.solutionIds ?? []), id!]))
+        : (input.plan.solutionIds ?? []).filter((sid) => sid !== id);
+      return api.patch(`/catalog/installment-plans/${input.plan._id}`, {
+        solutionIds: next,
+      });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["installment-plans"] }),
+  });
+
+  type Dashboard = {
+    summary: { _id: string; count: number; amountCents: number }[];
+    totals: { count: number; amountCents: number };
+    recent: Pick<
+      Contract,
+      | "_id"
+      | "customerId"
+      | "agentId"
+      | "status"
+      | "amountCents"
+      | "currency"
+      | "paymentMethod"
+      | "signedAt"
+      | "createdAt"
+    >[];
+  };
+  const { data: dash } = useQuery<Dashboard>({
+    queryKey: ["solution-dashboard", id],
+    queryFn: async () =>
+      (await api.get(`/catalog/solutions/${id}/dashboard`)).data,
     enabled: !!id,
   });
 
@@ -286,6 +341,250 @@ export function SolutionDetail() {
           </TBody>
         </Table>
       </Card>
+
+      {/* Per Review 1.2 (2026-05-04) + Figma: pricing matrix for the active version. */}
+      {activeVersion && (
+        <Card padding={false} className="mt-6">
+          <div className="px-6 py-4 border-b border-slate-200">
+            <h3 className="font-semibold flex items-center gap-2">
+              <Grid3X3 className="size-4" /> Pricing matrix
+              <Badge tone="brand">active version</Badge>
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              One unified editor for the (payment method × installment plan ×
+              advance range) overrides — no jumping between sections.
+            </p>
+          </div>
+          <div className="px-6 py-4">
+            <PricingMatrixEditor
+              solutionId={id!}
+              version={activeVersion}
+              plans={allPlans.filter(
+                (p) =>
+                  p.active &&
+                  (!p.solutionIds ||
+                    p.solutionIds.length === 0 ||
+                    p.solutionIds.includes(id!))
+              )}
+              canEdit={role === "ADMIN"}
+            />
+          </div>
+        </Card>
+      )}
+
+      {/* Per Review 1.2 (2026-05-04): linked installment plans on the same page. */}
+      <Card padding={false} className="mt-6">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap">
+          <div>
+            <h3 className="font-semibold flex items-center gap-2">
+              <Calendar className="size-4" /> Available installment plans
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Plans an agent can pick when creating a contract for this
+              solution. Universal plans (linked to no solution) appear for every
+              solution.
+            </p>
+          </div>
+        </div>
+        <div className="px-6 py-4 space-y-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+              Linked to this solution ({linkedPlans.length})
+            </div>
+            {linkedPlans.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                No solution-specific plans yet — the universal plans below apply.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {linkedPlans.map((p) => (
+                  <span
+                    key={p._id}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-200 text-brand-700"
+                  >
+                    <strong>{p.name}</strong> · {p.months}mo
+                    {role === "ADMIN" && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          togglePlanLink.mutate({ plan: p, link: false })
+                        }
+                        className="ml-1 hover:text-brand-900"
+                        title="Detach from this solution"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {universalPlans.length > 0 && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                Universal plans ({universalPlans.length})
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {universalPlans.map((p) => (
+                  <span
+                    key={p._id}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700"
+                  >
+                    {p.name} · {p.months}mo
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {role === "ADMIN" && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                Other plans (click to attach)
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {allPlans
+                  .filter(
+                    (p) =>
+                      p.active &&
+                      p.solutionIds &&
+                      p.solutionIds.length > 0 &&
+                      !p.solutionIds.includes(id!)
+                  )
+                  .map((p) => (
+                    <button
+                      key={p._id}
+                      type="button"
+                      onClick={() => togglePlanLink.mutate({ plan: p, link: true })}
+                      className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border border-dashed border-slate-300 text-slate-600 hover:bg-slate-50"
+                    >
+                      <Check className="size-3" /> {p.name} · {p.months}mo
+                    </button>
+                  ))}
+                {allPlans.filter(
+                  (p) =>
+                    p.active &&
+                    p.solutionIds &&
+                    p.solutionIds.length > 0 &&
+                    !p.solutionIds.includes(id!)
+                ).length === 0 && (
+                  <span className="text-xs text-slate-400">
+                    All restricted plans are already attached.
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                Manage the full catalog under{" "}
+                <Link
+                  to="/admin/installment-plans"
+                  className="text-brand-600 hover:underline"
+                >
+                  Installment plans
+                </Link>
+                .
+              </p>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Per Review 1.2 (2026-05-04): per-solution dashboard. */}
+      <Card padding={false} className="mt-6">
+        <div className="px-6 py-4 border-b border-slate-200">
+          <h3 className="font-semibold flex items-center gap-2">
+            <FileSignature className="size-4" /> Contracts on this solution
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {role === "ADMIN" || role === "AREA_MANAGER"
+              ? "Across the whole company (filtered by your visibility)."
+              : "Only your own contracts."}
+          </p>
+        </div>
+        <div className="px-6 py-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <Stat
+              label="Total contracts"
+              value={dash?.totals.count ?? 0}
+            />
+            <Stat
+              label="Total amount"
+              value={
+                dash
+                  ? formatCents(dash.totals.amountCents, "EUR")
+                  : "—"
+              }
+            />
+            <Stat
+              label="Signed"
+              value={
+                dash?.summary.find((s) => s._id === "SIGNED")?.count ?? 0
+              }
+            />
+            <Stat
+              label="Drafts"
+              value={dash?.summary.find((s) => s._id === "DRAFT")?.count ?? 0}
+            />
+          </div>
+          {dash && dash.recent.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-6">
+              No contracts on this solution yet.
+            </p>
+          ) : (
+            <Table>
+              <THead>
+                <Th>Contract</Th>
+                <Th>Status</Th>
+                <Th>Amount</Th>
+                <Th>Payment</Th>
+                <Th>Signed</Th>
+                <Th>Created</Th>
+              </THead>
+              <TBody>
+                {dash?.recent.map((c) => (
+                  <Tr key={c._id}>
+                    <Td>
+                      <Link
+                        to={`/contracts/${c._id}`}
+                        className="text-brand-600 hover:underline"
+                      >
+                        <code className="text-xs font-mono">
+                          {c._id.slice(-8)}
+                        </code>
+                      </Link>
+                    </Td>
+                    <Td>
+                      <StatusBadge status={c.status} />
+                    </Td>
+                    <Td className="font-semibold">
+                      {formatCents(c.amountCents, c.currency)}
+                    </Td>
+                    <Td className="text-xs text-slate-600">
+                      {c.paymentMethod.replace(/_/g, " ")}
+                    </Td>
+                    <Td className="text-xs text-slate-500">
+                      {formatDate(c.signedAt)}
+                    </Td>
+                    <Td className="text-xs text-slate-500">
+                      {formatDateTime(c.createdAt)}
+                    </Td>
+                  </Tr>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2.5">
+      <div className="text-[11px] uppercase tracking-wider text-slate-500">
+        {label}
+      </div>
+      <div className="text-lg font-semibold text-slate-900 mt-0.5">{value}</div>
     </div>
   );
 }

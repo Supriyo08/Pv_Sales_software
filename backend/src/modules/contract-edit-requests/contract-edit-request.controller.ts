@@ -13,13 +13,19 @@ const objectId = z
   .string()
   .refine((v) => Types.ObjectId.isValid(v), { message: "Invalid ObjectId" });
 
+// Per Review 1.2 (2026-05-04): expanded whitelist mirroring the service-layer
+// EDITABLE_KEYS so the API accepts every field the spec asks for.
 const changesSchema = z
   .object({
     amountCents: z.number().int().min(0).optional(),
+    currency: z.string().length(3).optional(),
     paymentMethod: z.enum(PAYMENT_METHODS).optional(),
     advanceCents: z.number().int().min(0).optional(),
     installmentPlanId: objectId.nullish(),
     solutionVersionId: objectId.optional(),
+    agentId: objectId.optional(),
+    customerId: objectId.optional(),
+    leadId: objectId.nullish(),
   })
   .strict();
 

@@ -9,6 +9,8 @@ import { Field, Input, Select } from "../components/ui/Input";
 import { StatusBadge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
+import { PaymentLedger } from "../components/PaymentLedger";
+import { useRole } from "../store/auth";
 import { formatCents, formatDateTime, currentPeriod } from "../lib/format";
 import type {
   Payment,
@@ -23,6 +25,8 @@ const METHODS: PaymentMethod[] = ["WIRE", "CASH", "CHECK", "CARD", "OTHER"];
 
 export function Payments() {
   const qc = useQueryClient();
+  const role = useRole();
+  const isAdmin = role === "ADMIN";
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ userId: "", period: currentPeriod() });
   const [createError, setCreateError] = useState<string | null>(null);
@@ -60,7 +64,7 @@ export function Payments() {
     <div className="space-y-6">
       <PageHeader
         title="Payments"
-        description="Per-user, per-period payment records with full transaction history."
+        description="Current situation summary, double-entry ledger, and per-user/period payable records."
         action={
           !showCreate ? (
             <Button onClick={() => setShowCreate(true)} icon={<Plus className="size-4" />}>
@@ -69,6 +73,9 @@ export function Payments() {
           ) : null
         }
       />
+
+      {/* Per Review 1.2 (2026-05-04): summary tile + double-entry ledger. */}
+      <PaymentLedger isAdmin={isAdmin} users={users} />
 
       {showCreate && (
         <Card>

@@ -44,11 +44,49 @@ async function projectTemplate(t: Awaited<ReturnType<typeof templateService.getB
   return { ...obj, analysis: templateService.analyze(t.body) };
 }
 
-export const list: RequestHandler = async (_req, res, next) => {
+export const list: RequestHandler = async (req, res, next) => {
   try {
-    const all = await templateService.list();
+    const includeArchived = req.query.includeArchived === "true";
+    const all = await templateService.list({ includeArchived });
     const projected = await Promise.all(all.map(projectTemplate));
     res.json(projected);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.2 (2026-05-04): chronological version history derived from the
+// audit log — every create/update/upload/delete/restore on this template, with
+// before/after snapshots so the UI can compute a diff.
+export const history: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const entries = await audit.listForTarget(
+      "ContractTemplate",
+      req.params.id!
+    );
+    res.json(entries);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.2 (2026-05-04): restore an archived template (clears `deletedAt`
+// and re-activates it).
+export const restore: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const id = req.params.id!;
+    const t = await templateService.restore(id);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "template.restore",
+      targetType: "ContractTemplate",
+      targetId: id,
+      after: t.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(await projectTemplate(t));
   } catch (err) {
     next(err);
   }

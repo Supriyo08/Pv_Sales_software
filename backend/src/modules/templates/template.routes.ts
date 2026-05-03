@@ -14,5 +14,9 @@ router.post("/", requireRole("ADMIN"), ctrl.create);
 router.post("/upload", requireRole("ADMIN"), ctrl.uploadMiddleware, ctrl.upload);
 router.patch("/:id", requireRole("ADMIN"), ctrl.update);
 router.delete("/:id", requireRole("ADMIN"), ctrl.remove);
+// Per Review 1.2 (2026-05-04): restore an archived template.
+router.post("/:id/restore", requireRole("ADMIN"), ctrl.restore);
+// Per Review 1.2 (2026-05-04): version history (audit-driven).
+router.get("/:id/history", requireRole("ADMIN", "AREA_MANAGER"), ctrl.history);
 
 export default router;

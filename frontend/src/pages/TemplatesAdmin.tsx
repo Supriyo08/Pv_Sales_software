@@ -3,7 +3,8 @@ import { Link, Navigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   FileText,
-  Trash2,
+  Archive,
+  ArchiveRestore,
   Edit3,
   Eye,
   Plus,
@@ -12,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileType2,
+  History as HistoryIcon,
 } from "lucide-react";
 import { api, uploadUrl } from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
@@ -24,6 +26,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { RichTextEditor } from "../components/ui/RichTextEditor";
 import { DocxPreview } from "../components/DocxPreview";
 import { DocumentActions } from "../components/DocumentActions";
+import { TemplateHistoryModal } from "../components/TemplateHistoryModal";
 import { Modal } from "../components/ui/Modal";
 import { formatDate } from "../lib/format";
 import { useRole } from "../store/auth";
@@ -78,6 +81,8 @@ export function TemplatesAdmin() {
   const [showHtmlBody, setShowHtmlBody] = useState(false);
   // For previewing any template's source .docx in a modal from the list.
   const [previewing, setPreviewing] = useState<ContractTemplate | null>(null);
+  // Per Review 1.2 (2026-05-04): version history modal.
+  const [historyTemplate, setHistoryTemplate] = useState<ContractTemplate | null>(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -86,11 +91,17 @@ export function TemplatesAdmin() {
     solutionIds: [] as string[],
   });
   const [error, setError] = useState<string | null>(null);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data: templates = [] } = useQuery<ContractTemplate[]>({
-    queryKey: ["templates"],
-    queryFn: async () => (await api.get("/templates")).data,
+    queryKey: ["templates", { includeArchived }],
+    queryFn: async () =>
+      (
+        await api.get("/templates", {
+          params: { includeArchived: includeArchived ? "true" : undefined },
+        })
+      ).data,
   });
 
   const { data: solutions = [] } = useQuery<Solution[]>({
@@ -156,6 +167,12 @@ export function TemplatesAdmin() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
   });
 
+  // Per Review 1.2 (2026-05-04): bring an archived template back.
+  const restore = useMutation({
+    mutationFn: async (id: string) => api.post(`/templates/${id}/restore`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+
   const reset = () => {
     setEditingId(null);
     setEditorOpen(false);
@@ -212,7 +229,16 @@ export function TemplatesAdmin() {
         description="Build templates with @@placeholders and [[OPTIONAL:id|label]]…[[/OPTIONAL]] sections. Agents pick a template, fill the form, and the system generates the contract document. Upload .docx to keep the original Word formatting end-to-end."
         action={
           !editorOpen ? (
-            <div className="flex gap-2">
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={includeArchived}
+                  onChange={(e) => setIncludeArchived(e.target.checked)}
+                  className="size-3.5 rounded border-slate-300"
+                />
+                Show archived
+              </label>
               <Button
                 variant="outline"
                 onClick={() => fileInputRef.current?.click()}
@@ -463,10 +489,15 @@ export function TemplatesAdmin() {
               <Th></Th>
             </THead>
             <TBody>
-              {templates.map((t) => (
-                <Tr key={t._id}>
+              {templates.map((t) => {
+                const archived = !!(t as ContractTemplate & { deletedAt?: string | null }).deletedAt;
+                return (
+                <Tr key={t._id} className={archived ? "opacity-60" : ""}>
                   <Td>
-                    <div className="font-medium text-slate-900">{t.name}</div>
+                    <div className="font-medium text-slate-900 flex items-center gap-2">
+                      {t.name}
+                      {archived && <Badge tone="neutral">Archived</Badge>}
+                    </div>
                     {t.description && (
                       <div className="text-xs text-slate-500">{t.description}</div>
                     )}
@@ -483,7 +514,9 @@ export function TemplatesAdmin() {
                   <Td className="text-xs">{t.analysis.placeholders.length}</Td>
                   <Td className="text-xs">{t.analysis.sections.length}</Td>
                   <Td>
-                    {t.active ? (
+                    {archived ? (
+                      <Badge tone="neutral">Archived</Badge>
+                    ) : t.active ? (
                       <Badge tone="green">Active</Badge>
                     ) : (
                       <Badge tone="neutral">Inactive</Badge>
@@ -491,8 +524,8 @@ export function TemplatesAdmin() {
                   </Td>
                   <Td className="text-xs text-slate-500">{formatDate(t.updatedAt)}</Td>
                   <Td>
-                    <div className="flex gap-1">
-                      {t.sourceDocxPath ? (
+                    <div className="flex gap-1 flex-wrap">
+                      {!archived && (t.sourceDocxPath ? (
                         <button
                           onClick={() => setPreviewing(t)}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50"
@@ -506,25 +539,45 @@ export function TemplatesAdmin() {
                         >
                           <Eye className="size-3.5" /> Render
                         </Link>
+                      ))}
+                      {!archived && (
+                        <button
+                          onClick={() => startEdit(t)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-slate-600 hover:bg-slate-100"
+                        >
+                          <Edit3 className="size-3.5" /> Edit
+                        </button>
                       )}
                       <button
-                        onClick={() => startEdit(t)}
+                        onClick={() => setHistoryTemplate(t)}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-slate-600 hover:bg-slate-100"
+                        title="Version history"
                       >
-                        <Edit3 className="size-3.5" /> Edit
+                        <HistoryIcon className="size-3.5" /> History
                       </button>
-                      <button
-                        onClick={() => {
-                          if (confirm(`Delete template ${t.name}?`)) remove.mutate(t._id);
-                        }}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-red-600 hover:bg-red-50"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
+                      {archived ? (
+                        <button
+                          onClick={() => restore.mutate(t._id)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+                        >
+                          <ArchiveRestore className="size-3.5" /> Restore
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Archive template "${t.name}"? You can restore it later from "Show archived".`))
+                              remove.mutate(t._id);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-red-600 hover:bg-red-50"
+                        >
+                          <Archive className="size-3.5" /> Archive
+                        </button>
+                      )}
                     </div>
                   </Td>
                 </Tr>
-              ))}
+                );
+              })}
             </TBody>
           </Table>
         )}
@@ -576,6 +629,11 @@ upload here.`}</pre>
       <TemplatePreviewModal
         template={previewing}
         onClose={() => setPreviewing(null)}
+      />
+
+      <TemplateHistoryModal
+        template={historyTemplate}
+        onClose={() => setHistoryTemplate(null)}
       />
     </div>
   );

@@ -10,12 +10,58 @@ function maybeCsv(req: { query: Record<string, unknown> }, res: { setHeader: (n:
 export const agentEarnings: RequestHandler = async (req, res, next) => {
   try {
     const period = typeof req.query.period === "string" ? req.query.period : undefined;
-    const rows = await reportService.agentEarnings({ period });
+    // Per Review 1.2 (2026-05-04): support multi-period filter via ?periods=p1,p2,…
+    const periods =
+      typeof req.query.periods === "string"
+        ? (req.query.periods as string).split(",").filter(Boolean)
+        : undefined;
+    const rows = await reportService.agentEarnings({ period, periods });
     if (req.query.format === "csv") {
-      maybeCsv(req, res, `agent-earnings${period ? "-" + period : ""}`, rows as never);
+      maybeCsv(
+        req,
+        res,
+        `agent-earnings${period ? "-" + period : periods ? "-" + periods.join("_") : ""}`,
+        rows as never
+      );
       return;
     }
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.2 (2026-05-04): drill-down detail for a single agent.
+export const agentEarningsDetail: RequestHandler = async (req, res, next) => {
+  try {
+    const periods =
+      typeof req.query.periods === "string"
+        ? (req.query.periods as string).split(",").filter(Boolean)
+        : undefined;
+    res.json(
+      await reportService.agentEarningsDetail({
+        userId: req.params.userId!,
+        periods,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Per Review 1.2 (2026-05-04): drill-down detail for a single area manager.
+export const networkPerformanceDetail: RequestHandler = async (req, res, next) => {
+  try {
+    const periods =
+      typeof req.query.periods === "string"
+        ? (req.query.periods as string).split(",").filter(Boolean)
+        : undefined;
+    res.json(
+      await reportService.networkPerformanceDetail({
+        managerId: req.params.managerId!,
+        periods,
+      })
+    );
   } catch (err) {
     next(err);
   }

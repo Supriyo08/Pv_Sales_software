@@ -10,12 +10,20 @@ import { HttpError } from "../../middleware/error";
 import { events } from "../../lib/events";
 import { Contract } from "../contracts/contract.model";
 
+// Per Review 1.2 (2026-05-04): widen the whitelist so admins can request edits
+// to any meaningful field of a contract, not just price + payment terms.
+// Keeps the safety property of "service-side validation re-runs on apply" —
+// invalid combinations are rejected at apply time the same as on create().
 const EDITABLE_KEYS = new Set([
   "amountCents",
+  "currency",
   "paymentMethod",
   "advanceCents",
   "installmentPlanId",
   "solutionVersionId",
+  "agentId",
+  "customerId",
+  "leadId",
 ]);
 
 function whitelist(input: Record<string, unknown>): EditableContractFields {

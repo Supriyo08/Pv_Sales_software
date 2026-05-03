@@ -193,25 +193,73 @@ export async function create(input: CreateInput) {
 }
 
 /**
- * Per Review 1.1 §1: applied by admin/AM after approving a ContractEditRequest.
- * Whitelisted fields only — re-runs the same validation as create() (price range,
- * payment method invariants, plan lookup) before persisting. Emits `contract.updated`
- * so commission handlers can recalculate.
+ * Per Review 1.1 §1 + Review 1.2 (2026-05-04 expansion): applied by admin/AM
+ * after approving a ContractEditRequest. Whitelist now covers every field
+ * Review 1.2 calls out — pricing, payment method, installment plan, currency,
+ * solution version, agent reassignment, customer reassignment, lead link.
+ * Re-runs all create-time validations before persisting and emits
+ * `contract.updated` so commission handlers can recalculate.
  *
- * Cancelled or already-signed-and-approved contracts cannot be edited.
+ * Cancelled contracts cannot be edited.
  */
 export type EditableContractFields = {
   amountCents?: number;
+  currency?: string;
   paymentMethod?: PaymentMethod;
   advanceCents?: number;
   installmentPlanId?: string | null;
   solutionVersionId?: string;
+  agentId?: string;
+  customerId?: string;
+  leadId?: string | null;
 };
 
 export async function applyEdit(id: string, changes: EditableContractFields) {
   const contract = await getById(id);
   if (contract.status === "CANCELLED") {
     throw new HttpError(400, "Cannot edit a cancelled contract");
+  }
+
+  // Re-validate referenced agent if reassigning. Per Review 1.2: admin can move
+  // a contract between agents through the edit-request flow; the new agent's
+  // managerId becomes the contract's manager (matches create() behavior).
+  if (changes.agentId !== undefined) {
+    const agent = await User.findOne({ _id: changes.agentId, deletedAt: null });
+    if (!agent) throw new HttpError(400, "New agent not found");
+    if (agent.role !== "AGENT") {
+      throw new HttpError(400, "New owner must be an active AGENT");
+    }
+    contract.agentId = agent._id as unknown as typeof contract.agentId;
+    contract.managerId = (agent.managerId ??
+      null) as unknown as typeof contract.managerId;
+    contract.territoryId = (agent.territoryId ??
+      null) as unknown as typeof contract.territoryId;
+  }
+
+  // Re-validate referenced customer if reassigning.
+  if (changes.customerId !== undefined) {
+    const customer = await Customer.findOne({
+      _id: changes.customerId,
+      deletedAt: null,
+    });
+    if (!customer) throw new HttpError(400, "New customer not found");
+    contract.customerId = customer._id as unknown as typeof contract.customerId;
+  }
+
+  // Lead link (null clears).
+  if (changes.leadId !== undefined) {
+    if (changes.leadId) {
+      const lead = await Lead.findOne({ _id: changes.leadId, deletedAt: null });
+      if (!lead) throw new HttpError(400, "New lead not found");
+    }
+    contract.leadId = (changes.leadId ?? null) as unknown as typeof contract.leadId;
+  }
+
+  if (changes.currency !== undefined) {
+    if (!/^[A-Z]{3}$/.test(changes.currency)) {
+      throw new HttpError(400, "currency must be a 3-letter ISO code (e.g. EUR)");
+    }
+    contract.currency = changes.currency;
   }
 
   // Determine effective version (existing or new) for price-range validation
@@ -517,4 +565,248 @@ export async function cancel(id: string, reason: string) {
   await contract.save();
   events.emit("contract.cancelled", { contractId: contract._id.toString() });
   return contract;
+}
+
+/**
+ * Per Review 1.2 (2026-05-04): a chronological history of every meaningful
+ * event in a contract's lifecycle so admins, AMs and agents can scroll through
+ * the full story on one page — created → generated → approved → signed →
+ * scan uploaded → admin approved → AM advance authorised → installation
+ * milestones → commissions paid → reversal reviews → cancellations.
+ *
+ * Sources merged:
+ *   - the Contract document's own dated fields (createdAt, signedAt, …)
+ *   - Installation milestones (one row per milestone)
+ *   - Commission rows (active + superseded — supersession is its own event)
+ *   - ContractEditRequest rows (created + decided)
+ *   - AdvancePayAuthorization rows (created + decided)
+ *   - ReversalReview rows (created + decided)
+ *
+ * Returns events sorted ascending by date so the frontend renders a true
+ * top-to-bottom timeline.
+ */
+export type ContractHistoryEvent = {
+  at: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  actorId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export async function history(id: string): Promise<ContractHistoryEvent[]> {
+  const contract = await getById(id);
+
+  const { Commission } = await import("../commissions/commission.model");
+  const { ContractEditRequest } = await import(
+    "../contract-edit-requests/contract-edit-request.model"
+  );
+  const { AdvancePayAuthorization } = await import(
+    "../advance-pay-authorizations/advance-pay-auth.model"
+  );
+  const { ReversalReview } = await import(
+    "../reversal-reviews/reversal-review.model"
+  );
+
+  const events_: ContractHistoryEvent[] = [];
+
+  // ── Contract intrinsic timestamps ────────────────────────────────────────
+  events_.push({
+    at: (contract.createdAt as Date).toISOString(),
+    kind: "contract.created",
+    title: "Contract created",
+    detail: `${(contract.amountCents / 100).toFixed(2)} ${contract.currency} · ${contract.paymentMethod}`,
+    metadata: {
+      amountCents: contract.amountCents,
+      currency: contract.currency,
+      paymentMethod: contract.paymentMethod,
+    },
+  });
+
+  if (contract.generatedDocumentId && contract.updatedAt) {
+    // We don't have a per-event date for generation, so use updatedAt as a
+    // best-available approximation for when the latest generation occurred.
+    events_.push({
+      at: (contract.updatedAt as Date).toISOString(),
+      kind: "contract.generated",
+      title: "Contract PDF generated",
+      detail: contract.generationApprovedAt
+        ? "Approved by admin/AM"
+        : "Awaiting admin/AM approval",
+      metadata: { documentId: contract.generatedDocumentId.toString() },
+    });
+  }
+
+  if (contract.generationApprovedAt) {
+    events_.push({
+      at: (contract.generationApprovedAt as Date).toISOString(),
+      kind: "contract.generation_approved",
+      title: "Generated PDF approved",
+      detail: "Agent unlocked to sign + upload signed scan",
+      actorId: contract.generationApprovedBy?.toString() ?? null,
+    });
+  }
+
+  if (contract.signedAt) {
+    events_.push({
+      at: (contract.signedAt as Date).toISOString(),
+      kind: "contract.signed",
+      title: "Signed by agent",
+      detail: contract.approvalRequired
+        ? "Awaiting customer-signed scan + admin approval"
+        : "Auto-approved (legacy path)",
+    });
+  }
+
+  if (contract.signedScanDocumentId) {
+    events_.push({
+      at: (contract.updatedAt as Date).toISOString(),
+      kind: "contract.signed_scan_uploaded",
+      title: "Customer-signed scan uploaded",
+      metadata: { documentId: contract.signedScanDocumentId.toString() },
+    });
+  }
+
+  if (contract.approvedAt) {
+    events_.push({
+      at: (contract.approvedAt as Date).toISOString(),
+      kind: "contract.approved",
+      title: "Contract approved by admin/AM",
+      detail: "Triggered the advance-pay authorization request",
+      actorId: contract.approvedBy?.toString() ?? null,
+    });
+  }
+
+  if (contract.cancelledAt) {
+    events_.push({
+      at: (contract.cancelledAt as Date).toISOString(),
+      kind: "contract.cancelled",
+      title: "Contract cancelled",
+      detail: contract.cancellationReason || undefined,
+    });
+  }
+
+  // ── Installation lifecycle ───────────────────────────────────────────────
+  const installation = await Installation.findOne({ contractId: contract._id });
+  if (installation) {
+    for (const m of installation.milestones ?? []) {
+      events_.push({
+        at: (m.date as Date).toISOString(),
+        kind: `installation.${m.status.toLowerCase()}`,
+        title: `Installation: ${m.status}`,
+        detail: m.notes || undefined,
+      });
+    }
+    if (installation.cancelledAt) {
+      events_.push({
+        at: (installation.cancelledAt as Date).toISOString(),
+        kind: "installation.cancelled",
+        title: "Installation cancelled",
+        detail: installation.cancellationReason || undefined,
+      });
+    }
+  }
+
+  // ── Commission ledger (active + superseded) ──────────────────────────────
+  const commissions = await Commission.find({ contractId: contract._id }).lean();
+  for (const c of commissions) {
+    events_.push({
+      at: (c.generatedAt as Date).toISOString(),
+      kind: "commission.generated",
+      title: `Commission paid (${c.beneficiaryRole})`,
+      detail: `${(c.amountCents / 100).toFixed(2)} ${c.currency} via ${c.sourceEvent}`,
+      actorId: c.beneficiaryUserId.toString(),
+      metadata: {
+        amountCents: c.amountCents,
+        bonus: false,
+        superseded: !!c.supersededAt,
+      },
+    });
+    if (c.supersededAt) {
+      events_.push({
+        at: (c.supersededAt as Date).toISOString(),
+        kind: "commission.superseded",
+        title: `Commission reversed (${c.beneficiaryRole})`,
+        detail: `${(c.amountCents / 100).toFixed(2)} ${c.currency} · ${c.reason ?? "no reason"}`,
+        actorId: c.beneficiaryUserId.toString(),
+      });
+    }
+  }
+
+  // ── Contract edit requests ───────────────────────────────────────────────
+  const editRequests = await ContractEditRequest.find({
+    contractId: contract._id,
+  }).lean();
+  for (const er of editRequests) {
+    events_.push({
+      at: (er.createdAt as Date).toISOString(),
+      kind: "contract.edit_requested",
+      title: "Edit requested",
+      detail:
+        er.reason ||
+        `Fields: ${Object.keys((er.changes as Record<string, unknown>) ?? {}).join(", ")}`,
+      actorId: er.requestedBy.toString(),
+      metadata: { status: er.status, changes: er.changes },
+    });
+    if (er.decidedAt) {
+      events_.push({
+        at: (er.decidedAt as Date).toISOString(),
+        kind: `contract.edit_${er.status.toLowerCase()}`,
+        title: `Edit ${er.status.toLowerCase()}`,
+        detail: er.decisionNote || undefined,
+        actorId: er.decidedBy?.toString() ?? null,
+      });
+    }
+  }
+
+  // ── Advance pay authorizations ───────────────────────────────────────────
+  const auths = await AdvancePayAuthorization.find({
+    contractId: contract._id,
+  }).lean();
+  for (const a of auths) {
+    events_.push({
+      at: (a.requestedAt as Date | undefined ?? a.createdAt as Date).toISOString(),
+      kind: "advance_pay_auth.requested",
+      title: "Advance commission authorization requested",
+      detail: "AM must decide whether to release the agent's commission early",
+    });
+    if (a.decidedAt) {
+      events_.push({
+        at: (a.decidedAt as Date).toISOString(),
+        kind: `advance_pay_auth.${a.status.toLowerCase()}`,
+        title:
+          a.status === "AUTHORIZED"
+            ? "Advance commission AUTHORIZED"
+            : a.status === "DECLINED"
+              ? "Advance commission DECLINED"
+              : "Advance auth resolved by install",
+        detail: a.note || undefined,
+        actorId: a.decidedBy?.toString() ?? null,
+      });
+    }
+  }
+
+  // ── Reversal reviews (admin decisions on cancelled installs) ─────────────
+  const reviews = await ReversalReview.find({ contractId: contract._id }).lean();
+  for (const r of reviews) {
+    events_.push({
+      at: (r.createdAt as Date).toISOString(),
+      kind: "reversal_review.created",
+      title: `Reversal review (${r.kind})`,
+      detail: `${(r.amountCents / 100).toFixed(2)} ${r.currency} affected`,
+    });
+    if (r.decidedAt) {
+      events_.push({
+        at: (r.decidedAt as Date).toISOString(),
+        kind: `reversal_review.${(r.decision ?? "decided").toLowerCase()}`,
+        title: `Reversal ${r.decision ?? "decided"}`,
+        detail: r.decisionNote || undefined,
+        actorId: r.decidedBy?.toString() ?? null,
+      });
+    }
+  }
+
+  // Sort ascending so the timeline reads top-to-bottom chronologically.
+  events_.sort((a, b) => a.at.localeCompare(b.at));
+  return events_;
 }

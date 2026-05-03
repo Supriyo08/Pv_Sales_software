@@ -278,8 +278,12 @@ export function slugify(name: string): string {
     .slice(0, 80) || "contract";
 }
 
-export async function list() {
-  return ContractTemplate.find({ deletedAt: null }).sort({ updatedAt: -1 });
+// Per Review 1.2 (2026-05-04): admins can opt into seeing archived templates
+// (those with `deletedAt` set) so they can restore them.
+export async function list(opts: { includeArchived?: boolean } = {}) {
+  const q: Record<string, unknown> = {};
+  if (!opts.includeArchived) q.deletedAt = null;
+  return ContractTemplate.find(q).sort({ updatedAt: -1 });
 }
 
 export async function getById(id: string) {
@@ -480,4 +484,18 @@ export async function softDelete(id: string) {
     { new: true }
   );
   if (!result) throw new HttpError(404, "Template not found");
+}
+
+// Per Review 1.2 (2026-05-04): templates are archived (not hard-deleted), so
+// admins can bring one back without re-uploading. Restoring re-activates it
+// by default — admins can deactivate again if they only wanted to restore the
+// record without making it selectable.
+export async function restore(id: string) {
+  const result = await ContractTemplate.findOneAndUpdate(
+    { _id: id },
+    { deletedAt: null, active: true },
+    { new: true }
+  );
+  if (!result) throw new HttpError(404, "Template not found");
+  return result;
 }

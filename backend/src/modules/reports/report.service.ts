@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import { Commission } from "../commissions/commission.model";
 import { Contract } from "../contracts/contract.model";
 import { Installation } from "../installations/installation.model";
@@ -5,9 +6,16 @@ import { Payment } from "../payments/payment.model";
 import { User } from "../users/user.model";
 import { Bonus } from "../bonuses/bonus.model";
 
-export async function agentEarnings(opts: { period?: string }) {
+// Per Review 1.2 (2026-05-04): support multiple periods (passed as
+// `periods=p1,p2,…`) on the aggregate reports, plus a per-agent drill-down.
+// `period` (single) continues to work for backward compatibility.
+export async function agentEarnings(opts: { period?: string; periods?: string[] }) {
   const match: Record<string, unknown> = { supersededAt: null, beneficiaryRole: "AGENT" };
-  if (opts.period) match.period = opts.period;
+  if (opts.periods && opts.periods.length > 0) {
+    match.period = { $in: opts.periods };
+  } else if (opts.period) {
+    match.period = opts.period;
+  }
 
   const grouped = await Commission.aggregate([
     { $match: match },
@@ -93,6 +101,104 @@ export async function paymentSummary() {
   const byStatus: Record<string, { count: number; totalCents: number }> = {};
   for (const g of grouped) byStatus[g._id] = { count: g.count, totalCents: g.totalCents };
   return byStatus;
+}
+
+/**
+ * Per Review 1.2 (2026-05-04): drill-down detail for a single agent's
+ * earnings — every commission row backing the aggregated total, plus the
+ * contract metadata so the UI can link back to each contract.
+ */
+export async function agentEarningsDetail(opts: {
+  userId: string;
+  periods?: string[];
+}) {
+  const match: Record<string, unknown> = {
+    supersededAt: null,
+    beneficiaryUserId: new Types.ObjectId(opts.userId),
+  };
+  if (opts.periods && opts.periods.length > 0) match.period = { $in: opts.periods };
+  const rows = await Commission.find(match)
+    .sort({ generatedAt: -1 })
+    .limit(500)
+    .lean();
+  const contractIds = rows
+    .filter((r) => !!r.contractId)
+    .map((r) => r.contractId);
+  const contracts = await Contract.find(
+    { _id: { $in: contractIds } },
+    { customerId: 1, amountCents: 1, currency: 1, status: 1, signedAt: 1 }
+  ).lean();
+  const cMap = new Map(contracts.map((c) => [c._id.toString(), c]));
+  return rows.map((r) => ({
+    _id: r._id.toString(),
+    contractId: r.contractId ? r.contractId.toString() : null,
+    contract: r.contractId ? cMap.get(r.contractId.toString()) ?? null : null,
+    role: r.beneficiaryRole,
+    sourceEvent: r.sourceEvent,
+    amountCents: r.amountCents,
+    currency: r.currency,
+    period: r.period,
+    generatedAt: r.generatedAt,
+    reason: r.reason,
+  }));
+}
+
+/**
+ * Per Review 1.2 (2026-05-04): drill-down for a single area manager —
+ * agents in their network plus the contracts those agents signed.
+ */
+export async function networkPerformanceDetail(opts: {
+  managerId: string;
+  periods?: string[];
+}) {
+  const agents = await User.find({
+    managerId: new Types.ObjectId(opts.managerId),
+    role: "AGENT",
+    deletedAt: null,
+  }).select("_id fullName email territoryId");
+  const agentIds = agents.map((a) => a._id);
+  const contractMatch: Record<string, unknown> = {
+    agentId: { $in: agentIds },
+    status: "SIGNED",
+  };
+  if (opts.periods && opts.periods.length > 0) {
+    // Convert period (YYYY-MM) → signedAt range OR.
+    const rangeOr = opts.periods
+      .map((p) => {
+        const parts = p.split("-").map(Number);
+        const y = parts[0];
+        const m = parts[1];
+        if (y === undefined || m === undefined) return null;
+        const from = new Date(Date.UTC(y, m - 1, 1));
+        const to = new Date(Date.UTC(y, m, 1));
+        return { signedAt: { $gte: from, $lt: to } };
+      })
+      .filter((x): x is { signedAt: { $gte: Date; $lt: Date } } => x !== null);
+    if (rangeOr.length > 0) contractMatch.$or = rangeOr;
+  }
+  const contracts = await Contract.find(contractMatch)
+    .sort({ signedAt: -1 })
+    .limit(500)
+    .select("_id agentId customerId amountCents currency status signedAt paymentMethod")
+    .lean();
+  return {
+    agents: agents.map((a) => ({
+      userId: a._id.toString(),
+      fullName: a.fullName,
+      email: a.email,
+      territoryId: a.territoryId?.toString() ?? null,
+    })),
+    contracts: contracts.map((c) => ({
+      _id: c._id.toString(),
+      agentId: c.agentId.toString(),
+      customerId: c.customerId.toString(),
+      amountCents: c.amountCents,
+      currency: c.currency,
+      status: c.status,
+      signedAt: c.signedAt,
+      paymentMethod: c.paymentMethod,
+    })),
+  };
 }
 
 export async function pipelineFunnel() {

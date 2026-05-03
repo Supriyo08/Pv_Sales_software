@@ -54,6 +54,25 @@ export type SolutionEnriched = Solution & {
   installmentPlans: { _id: string; name: string; months: number }[];
 };
 
+// Per Review 1.2 (2026-05-04): pricing matrix row mirroring the Figma board.
+// Each combination of (paymentMethod × installmentPlan × advance-range) can
+// override the version's defaults. `*Pct` fields are alternative inputs
+// expressed as percentages of the base — server resolves them at apply time.
+export type SolutionPricingMatrixRow = {
+  _id?: string;
+  label?: string;
+  paymentMethod: "ONE_TIME" | "ADVANCE_INSTALLMENTS" | "FULL_INSTALLMENTS";
+  installmentPlanId?: string | null;
+  advanceMinCents?: number | null;
+  advanceMaxCents?: number | null;
+  finalPriceCents?: number | null;
+  finalPricePct?: number | null;
+  agentBp?: number | null;
+  agentPct?: number | null;
+  managerBp?: number | null;
+  managerPct?: number | null;
+};
+
 export type SolutionVersion = {
   _id: string;
   solutionId: string;
@@ -70,6 +89,7 @@ export type SolutionVersion = {
   boundToUserIds: string[];
   boundToTerritoryIds: string[];
   boundToCustomerIds: string[];
+  pricingMatrix: SolutionPricingMatrixRow[];
   createdAt: string;
 };
 
@@ -326,16 +346,32 @@ export type ReversalReview = {
   createdAt: string;
 };
 
+// Per Review 1.2 (2026-05-04): full contract lifecycle timeline.
+export type ContractHistoryEvent = {
+  at: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  actorId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type ContractEditRequest = {
   _id: string;
   contractId: string;
   requestedBy: string;
+  // Per Review 1.2 (2026-05-04): expanded set covers every editable field —
+  // pricing, plan, version, agent/customer reassignment, lead link, currency.
   changes: {
     amountCents?: number;
+    currency?: string;
     paymentMethod?: ContractPaymentMethod;
     advanceCents?: number;
     installmentPlanId?: string | null;
     solutionVersionId?: string;
+    agentId?: string;
+    customerId?: string;
+    leadId?: string | null;
   };
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
