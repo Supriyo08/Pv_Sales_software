@@ -315,15 +315,55 @@ export type AuditLog = {
   createdAt: string;
 };
 
+// Per Review 1.2 (2026-05-04): two-stage status flow.
+//  - PENDING_MANAGER → manager hasn't decided
+//  - PENDING_ADMIN   → manager approved, admin hasn't decided
+//  - AUTHORIZED      → both approved (commission paid early)
+//  - DECLINED_BY_MANAGER / DECLINED_BY_ADMIN → terminal, defers to install
+//  - RESOLVED_BY_INSTALL → no decision before install activated
+// "PENDING" / "DECLINED" are kept for legacy v1.1 records.
+export type AdvanceAuthStatus =
+  | "PENDING"
+  | "PENDING_MANAGER"
+  | "PENDING_ADMIN"
+  | "AUTHORIZED"
+  | "DECLINED"
+  | "DECLINED_BY_MANAGER"
+  | "DECLINED_BY_ADMIN"
+  | "RESOLVED_BY_INSTALL";
+
 export type AdvancePayAuthorization = {
   _id: string;
   contractId: string;
   requestedAt: string;
+  status: AdvanceAuthStatus;
+  // Two-stage decision fields (Review 1.2).
+  managerDecidedBy: string | null;
+  managerDecidedAt: string | null;
+  managerDecision: "APPROVED" | "DECLINED" | null;
+  managerNote: string;
+  adminDecidedBy: string | null;
+  adminDecidedAt: string | null;
+  adminDecision: "APPROVED" | "DECLINED" | null;
+  adminNote: string;
+  // Legacy single-stage fields (kept for v1.1 records).
   decidedBy: string | null;
   decidedAt: string | null;
-  status: "PENDING" | "AUTHORIZED" | "DECLINED" | "RESOLVED_BY_INSTALL";
   note: string;
   createdAt: string;
+};
+
+export type CommissionBreakdown = {
+  userId: string;
+  totalPotentialCents: number;
+  paidEarlyCents: number;
+  paidAfterInstallCents: number;
+  pendingEarlyCents: number;
+  deferredCents: number;
+  pendingItemCount: number;
+  deferredItemCount: number;
+  paidEarlyItemCount: number;
+  paidAfterInstallItemCount: number;
 };
 
 export type ReversalReview = {

@@ -11,14 +11,33 @@ import { HttpError } from "../../middleware/error";
 import { events } from "../../lib/events";
 import { logger } from "../../utils/logger";
 
+/** Treat the legacy v1.1 "PENDING" as the manager-stage equivalent. */
+function isPendingManager(status: AdvanceAuthStatus): boolean {
+  return status === "PENDING" || status === "PENDING_MANAGER";
+}
+
+function isTerminal(status: AdvanceAuthStatus): boolean {
+  return (
+    status === "AUTHORIZED" ||
+    status === "DECLINED" ||
+    status === "DECLINED_BY_MANAGER" ||
+    status === "DECLINED_BY_ADMIN" ||
+    status === "RESOLVED_BY_INSTALL"
+  );
+}
+
 /**
- * Per Review 1.1 §8: create-or-noop on contract approval. Idempotent — re-approving
- * the same contract returns the existing record.
+ * Per Review 1.1 §8 + Review 1.2 (2026-05-04): create-or-noop on contract
+ * approval. Idempotent — re-approving the same contract returns the existing
+ * record. Initial status is PENDING_MANAGER.
  */
 export async function ensureForContract(contractId: string) {
   const existing = await AdvancePayAuthorization.findOne({ contractId });
   if (existing) return existing;
-  const created = await AdvancePayAuthorization.create({ contractId });
+  const created = await AdvancePayAuthorization.create({
+    contractId,
+    status: "PENDING_MANAGER",
+  });
   events.emit("advance_pay_auth.requested", {
     contractId,
     authorizationId: created._id.toString(),
@@ -46,20 +65,34 @@ export async function getById(id: string) {
   return a;
 }
 
-export async function decide(
+/**
+ * Per Review 1.2 (2026-05-04): stage 1 — area manager decision.
+ * APPROVED → escalates to PENDING_ADMIN (no commissions yet).
+ * DECLINED → terminal DECLINED_BY_MANAGER (commission deferred to install).
+ */
+export async function decideManager(
   id: string,
-  decision: "AUTHORIZED" | "DECLINED",
+  decision: "APPROVED" | "DECLINED",
   deciderId: string,
   note: string
 ) {
   const a = await getById(id);
-  if (a.status !== "PENDING") {
-    throw new HttpError(400, `Authorization already ${a.status.toLowerCase()}`);
+  const status = a.status as AdvanceAuthStatus;
+  if (!isPendingManager(status)) {
+    throw new HttpError(
+      400,
+      `Authorization is not awaiting manager decision (current: ${status})`
+    );
   }
-  a.status = decision;
+
+  a.managerDecidedBy = deciderId as unknown as typeof a.managerDecidedBy;
+  a.managerDecidedAt = new Date();
+  a.managerDecision = decision;
+  a.managerNote = note;
   a.decidedBy = deciderId as unknown as typeof a.decidedBy;
   a.decidedAt = new Date();
   a.note = note;
+  a.status = decision === "APPROVED" ? "PENDING_ADMIN" : "DECLINED_BY_MANAGER";
   await a.save();
 
   events.emit("advance_pay_auth.decided", {
@@ -67,11 +100,52 @@ export async function decide(
     authorizationId: a._id.toString(),
     decision,
     decidedBy: deciderId,
+    stage: "MANAGER",
   });
 
-  if (decision === "AUTHORIZED") {
-    // Per Review 1.1 §8: AM authorizes early payment → commissions fire now.
-    // The commission handler is idempotent (skip if active commissions exist).
+  // Manager declined: stop here. Commission will fire on install activation.
+  return a;
+}
+
+/**
+ * Per Review 1.2 (2026-05-04): stage 2 — admin decision (only after manager
+ * approval). APPROVED → AUTHORIZED + commissions fire.
+ * DECLINED → DECLINED_BY_ADMIN (commission deferred to install).
+ */
+export async function decideAdmin(
+  id: string,
+  decision: "APPROVED" | "DECLINED",
+  deciderId: string,
+  note: string
+) {
+  const a = await getById(id);
+  if (a.status !== "PENDING_ADMIN") {
+    throw new HttpError(
+      400,
+      `Authorization is not awaiting admin decision (current: ${a.status}). The area manager must approve first.`
+    );
+  }
+
+  a.adminDecidedBy = deciderId as unknown as typeof a.adminDecidedBy;
+  a.adminDecidedAt = new Date();
+  a.adminDecision = decision;
+  a.adminNote = note;
+  a.decidedBy = deciderId as unknown as typeof a.decidedBy;
+  a.decidedAt = new Date();
+  a.note = note;
+  a.status = decision === "APPROVED" ? "AUTHORIZED" : "DECLINED_BY_ADMIN";
+  await a.save();
+
+  events.emit("advance_pay_auth.decided", {
+    contractId: a.contractId.toString(),
+    authorizationId: a._id.toString(),
+    decision,
+    decidedBy: deciderId,
+    stage: "ADMIN",
+  });
+
+  if (decision === "APPROVED") {
+    // Both stages green — fire commissions now (early payment).
     await emitCommissionableIfNeeded(a.contractId.toString());
   }
 
@@ -79,23 +153,20 @@ export async function decide(
 }
 
 /**
- * Per Review 1.1 §8: when installation activates without AM authorization, fall
- * back to the deferred path — commissions auto-fire and we mark the pending
- * auth as RESOLVED_BY_INSTALL so the queue stays clean.
+ * Per Review 1.1 §8: when installation activates without a final AUTHORIZED
+ * decision, commissions auto-fire on the deferred path. Any non-terminal
+ * status is parked as RESOLVED_BY_INSTALL so the queue stays clean.
  */
 export async function resolveByInstallActivation(contractId: string) {
   const a = await AdvancePayAuthorization.findOne({ contractId });
   if (!a) {
-    // Defensive: contract that bypassed the v1.2 approval flow (e.g. a v1.1
-    // legacy contract). Just emit commissionable; commission handler is idempotent.
     await emitCommissionableIfNeeded(contractId);
     return;
   }
-  if (a.status === "AUTHORIZED") {
-    // Commission already paid early; nothing to do.
-    return;
-  }
-  if (a.status === "PENDING") {
+  const status = a.status as AdvanceAuthStatus;
+  if (status === "AUTHORIZED") return; // commissions already paid early
+
+  if (!isTerminal(status)) {
     a.status = "RESOLVED_BY_INSTALL";
     a.decidedAt = new Date();
     a.note = "auto-resolved on installation activation";
@@ -105,8 +176,6 @@ export async function resolveByInstallActivation(contractId: string) {
 }
 
 async function emitCommissionableIfNeeded(contractId: string) {
-  // Idempotent guard — skip if commissions already exist (e.g. legacy approve()
-  // path in older tests, or repeated trigger paths).
   const existing = await Commission.countDocuments({
     contractId,
     supersededAt: null,
@@ -118,18 +187,27 @@ async function emitCommissionableIfNeeded(contractId: string) {
     );
     return;
   }
-  // Direct call (synchronous) — event handlers can be racy in tests, and we want
-  // commission generation to happen in the same tick as the auth decision.
   await commissionService.generateForContract(
     contractId,
     "auto-generated via advance-pay-auth flow"
   );
-  // Emit the event too so any downstream listeners (analytics, side-effects) hear it.
   events.emit("contract.commissionable", { contractId });
 }
 
-export async function pendingCount(scope: Scope): Promise<number> {
-  const q: Record<string, unknown> = { status: "PENDING" };
+/**
+ * Per Review 1.2 (2026-05-04): the sidebar badge needs role-aware counts so
+ * managers see only their pending decisions, and admins see only theirs.
+ */
+export async function pendingCount(
+  scope: Scope,
+  stage: "MANAGER" | "ADMIN" | "ANY" = "ANY"
+): Promise<number> {
+  const stageStatuses: Record<typeof stage, AdvanceAuthStatus[]> = {
+    MANAGER: ["PENDING", "PENDING_MANAGER"],
+    ADMIN: ["PENDING_ADMIN"],
+    ANY: ["PENDING", "PENDING_MANAGER", "PENDING_ADMIN"],
+  };
+  const q: Record<string, unknown> = { status: { $in: stageStatuses[stage] } };
   if (!scope.isAdmin) {
     const visibleContracts = await Contract.find(agentIdMatch(scope), { _id: 1 }).lean();
     q.contractId = { $in: visibleContracts.map((c) => c._id) };

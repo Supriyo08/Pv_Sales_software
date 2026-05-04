@@ -159,7 +159,10 @@ export function registerNotificationHandlers(): void {
     }
   );
 
-  // Per Review 1.1 §8: advance-payment authorization request.
+  // Per Review 1.1 §8 + Review 1.2 (2026-05-04): advance-pay request goes to
+  // the assigned area manager FIRST. Admins are NOT pinged at this stage —
+  // they only get notified once the manager approves (so the admin queue is
+  // never cluttered with requests that may yet be denied at stage 1).
   events.on(
     "advance_pay_auth.requested",
     async ({
@@ -175,17 +178,63 @@ export function registerNotificationHandlers(): void {
         await notificationService.create({
           userId: contract.managerId.toString(),
           kind: "ADVANCE_PAY_AUTH_REQUESTED",
-          title: "Advance commission authorization needed",
-          body: `Authorize early payment of agent commission on contract ${contractId} (you take responsibility for refund if installation fails).`,
-          payload: { contractId, authorizationId },
+          title: "Advance commission authorization — your decision",
+          body: `Approve or decline the request to pay the agent's commission early on contract ${contractId}. If you approve, the request goes to admin for final sign-off.`,
+          payload: { contractId, authorizationId, stage: "MANAGER" },
         });
       }
-      await notifyAdmins(
-        "ADVANCE_PAY_AUTH_REQUESTED",
-        "Advance commission authorization needed",
-        `Awaiting AM authorization for early commission payment on contract ${contractId}`,
-        { contractId, authorizationId }
-      );
+    }
+  );
+
+  // Per Review 1.2 (2026-05-04): two-stage decision feedback.
+  // Stage 1 APPROVED → notify admins; DECLINED → notify the requesting agent.
+  // Stage 2 APPROVED/DECLINED → notify the agent (final outcome).
+  events.on(
+    "advance_pay_auth.decided",
+    async ({
+      contractId,
+      authorizationId,
+      decision,
+      stage,
+    }: {
+      contractId: string;
+      authorizationId: string;
+      decision: "APPROVED" | "DECLINED";
+      decidedBy: string;
+      stage: "MANAGER" | "ADMIN";
+    }) => {
+      const contract = await Contract.findById(contractId);
+      if (!contract) return;
+
+      if (stage === "MANAGER" && decision === "APPROVED") {
+        // Escalate to admins.
+        await notifyAdmins(
+          "ADVANCE_PAY_AUTH_REQUESTED",
+          "Advance commission authorization — admin sign-off needed",
+          `Manager approved early commission payment on contract ${contractId}. Please review.`,
+          { contractId, authorizationId, stage: "ADMIN" }
+        );
+        return;
+      }
+
+      // Stage 1 declined OR stage 2 decided → tell the agent the outcome.
+      if (contract.agentId) {
+        const decidedLabel =
+          stage === "MANAGER"
+            ? decision === "APPROVED"
+              ? "approved by your area manager — pending admin sign-off"
+              : "declined by your area manager — commission will pay on installation"
+            : decision === "APPROVED"
+              ? "fully approved — early commission paid now"
+              : "declined by admin — commission will pay on installation";
+        await notificationService.create({
+          userId: contract.agentId.toString(),
+          kind: "ADVANCE_PAY_AUTH_DECIDED",
+          title: "Advance commission decision",
+          body: `Contract ${contractId}: ${decidedLabel}.`,
+          payload: { contractId, authorizationId, stage, decision },
+        });
+      }
     }
   );
 

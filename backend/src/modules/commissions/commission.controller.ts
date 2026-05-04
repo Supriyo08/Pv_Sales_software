@@ -2,6 +2,7 @@ import type { RequestHandler } from "express";
 import * as commissionService from "./commission.service";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
+import { buildScope } from "../../lib/scope";
 
 export const list: RequestHandler = async (req, res, next) => {
   try {
@@ -30,6 +31,36 @@ export const listForUser: RequestHandler = async (req, res, next) => {
         active,
       })
     );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Per Review 1.2 (2026-05-04): the agent's "potential earnings" breakdown.
+ * Anyone can view their own; admins/AMs can view anyone in their scope.
+ */
+export const breakdownForUser: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const target = req.params.userId!;
+    const scope = await buildScope(req.user);
+    if (target !== req.user.sub && !scope.isAdmin) {
+      // Managers may view their own agents.
+      if (!scope.agentIds.includes(target)) {
+        throw new HttpError(403, "Cannot view another user's commission breakdown");
+      }
+    }
+    res.json(await commissionService.commissionBreakdownForUser(target));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const breakdownForMe: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    res.json(await commissionService.commissionBreakdownForUser(req.user.sub));
   } catch (err) {
     next(err);
   }

@@ -7,7 +7,7 @@ import { HttpError } from "../../middleware/error";
 import { buildScope } from "../../lib/scope";
 
 const decideSchema = z.object({
-  decision: z.enum(["AUTHORIZED", "DECLINED"]),
+  decision: z.enum(["APPROVED", "DECLINED"]),
   note: z.string().max(2000).optional(),
 });
 
@@ -38,14 +38,51 @@ export const get: RequestHandler = async (req, res, next) => {
   }
 };
 
-export const decide: RequestHandler = async (req, res, next) => {
+/**
+ * Per Review 1.2 (2026-05-04): stage-1 decision by the assigned area manager.
+ * Approval escalates to PENDING_ADMIN; decline is terminal.
+ */
+export const decideManager: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
     const body = decideSchema.parse(req.body);
-    const a = await service.decide(req.params.id!, body.decision, req.user.sub, body.note ?? "");
+    const a = await service.decideManager(
+      req.params.id!,
+      body.decision,
+      req.user.sub,
+      body.note ?? ""
+    );
     void audit.log({
       actorId: req.user.sub,
-      action: `advance-pay-auth.${body.decision.toLowerCase()}`,
+      action: `advance-pay-auth.manager.${body.decision.toLowerCase()}`,
+      targetType: "AdvancePayAuthorization",
+      targetId: a._id.toString(),
+      after: a.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(a);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Per Review 1.2 (2026-05-04): stage-2 decision by admin (only if manager
+ * already approved). Approval triggers commission generation.
+ */
+export const decideAdmin: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = decideSchema.parse(req.body);
+    const a = await service.decideAdmin(
+      req.params.id!,
+      body.decision,
+      req.user.sub,
+      body.note ?? ""
+    );
+    void audit.log({
+      actorId: req.user.sub,
+      action: `advance-pay-auth.admin.${body.decision.toLowerCase()}`,
       targetType: "AdvancePayAuthorization",
       targetId: a._id.toString(),
       after: a.toObject(),
@@ -61,7 +98,10 @@ export const pendingCount: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
     const scope = await buildScope(req.user);
-    res.json({ count: await service.pendingCount(scope) });
+    const stage = req.query.stage === "MANAGER" || req.query.stage === "ADMIN"
+      ? (req.query.stage as "MANAGER" | "ADMIN")
+      : "ANY";
+    res.json({ count: await service.pendingCount(scope, stage) });
   } catch (err) {
     next(err);
   }

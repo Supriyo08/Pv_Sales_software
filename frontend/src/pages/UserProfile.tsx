@@ -8,6 +8,7 @@ import { Avatar } from "../components/ui/Avatar";
 import { Badge, StatusBadge } from "../components/ui/Badge";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
+import { CommissionBreakdownCard } from "../components/CommissionBreakdownCard";
 import { formatCents, formatDate } from "../lib/format";
 import type { User, Contract, Payment } from "../lib/api-types";
 
@@ -88,6 +89,12 @@ export function UserProfile() {
           sub={`${paymentsByStatus.reduce((a, r) => a + r.count, 0)} payments`}
           tone="blue"
         />
+      </div>
+
+      {/* Per Review 1.2 (2026-05-04): potential commissions breakdown — admin
+          + AM see what the agent themselves see in their dashboard. */}
+      <div className="mt-6">
+        {id && <CommissionBreakdownCard userId={id} />}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2 mt-6">

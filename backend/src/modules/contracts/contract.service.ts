@@ -760,6 +760,9 @@ export async function history(id: string): Promise<ContractHistoryEvent[]> {
   }
 
   // ── Advance pay authorizations ───────────────────────────────────────────
+  // Per Review 1.2 (2026-05-04): two-stage decision flow — surface BOTH the
+  // manager and admin decisions in the contract history so everyone sees who
+  // greenlit early payment (or where it stalled).
   const auths = await AdvancePayAuthorization.find({
     contractId: contract._id,
   }).lean();
@@ -768,9 +771,42 @@ export async function history(id: string): Promise<ContractHistoryEvent[]> {
       at: (a.requestedAt as Date | undefined ?? a.createdAt as Date).toISOString(),
       kind: "advance_pay_auth.requested",
       title: "Advance commission authorization requested",
-      detail: "AM must decide whether to release the agent's commission early",
+      detail: "Sent to area manager for stage-1 review",
     });
-    if (a.decidedAt) {
+    if (a.managerDecidedAt) {
+      events_.push({
+        at: (a.managerDecidedAt as Date).toISOString(),
+        kind: `advance_pay_auth.manager.${(a.managerDecision ?? "").toLowerCase()}`,
+        title:
+          a.managerDecision === "APPROVED"
+            ? "Advance commission — manager APPROVED (awaiting admin)"
+            : "Advance commission — manager DECLINED (deferred to install)",
+        detail: a.managerNote || undefined,
+        actorId: a.managerDecidedBy?.toString() ?? null,
+      });
+    }
+    if (a.adminDecidedAt) {
+      events_.push({
+        at: (a.adminDecidedAt as Date).toISOString(),
+        kind: `advance_pay_auth.admin.${(a.adminDecision ?? "").toLowerCase()}`,
+        title:
+          a.adminDecision === "APPROVED"
+            ? "Advance commission — admin APPROVED (early payment fired)"
+            : "Advance commission — admin DECLINED (deferred to install)",
+        detail: a.adminNote || undefined,
+        actorId: a.adminDecidedBy?.toString() ?? null,
+      });
+    }
+    // Legacy single-stage rows (PENDING / AUTHORIZED / DECLINED) — render the
+    // resolved status if it didn't go through the two-stage fields above.
+    if (
+      !a.managerDecidedAt &&
+      !a.adminDecidedAt &&
+      a.decidedAt &&
+      (a.status === "AUTHORIZED" ||
+        a.status === "DECLINED" ||
+        a.status === "RESOLVED_BY_INSTALL")
+    ) {
       events_.push({
         at: (a.decidedAt as Date).toISOString(),
         kind: `advance_pay_auth.${a.status.toLowerCase()}`,

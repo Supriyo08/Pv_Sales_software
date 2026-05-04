@@ -32,48 +32,61 @@ async function makeApprovedContract() {
   return { admin, am, agent, customer, version, contract };
 }
 
-describe("AdvancePayAuthorization (Review 1.1 §8)", () => {
+describe("AdvancePayAuthorization (Review 1.1 §8 + Review 1.2 two-stage)", () => {
   it("ensureForContract is idempotent — re-approving doesn't duplicate the record", async () => {
     const { contract } = await makeApprovedContract();
     const a = await authService.ensureForContract(contract._id.toString());
     const again = await authService.ensureForContract(contract._id.toString());
     expect(again._id.toString()).toBe(a._id.toString());
-    expect(a.status).toBe("PENDING");
+    expect(a.status).toBe("PENDING_MANAGER");
   });
 
-  it("AUTHORIZED decision triggers commission generation immediately", async () => {
+  it("manager APPROVED escalates to PENDING_ADMIN — commissions do NOT fire yet", async () => {
     const { am, contract } = await makeApprovedContract();
     const a = await authService.ensureForContract(contract._id.toString());
     expect(
       await Commission.countDocuments({ contractId: contract._id })
     ).toBe(0);
-    await authService.decide(
+    const after = await authService.decideManager(
       a._id.toString(),
-      "AUTHORIZED",
+      "APPROVED",
       am._id.toString(),
-      "I take responsibility"
+      "ok with me"
     );
-    const after = await Commission.countDocuments({
-      contractId: contract._id,
-      supersededAt: null,
-    });
-    expect(after).toBeGreaterThan(0);
+    expect(after.status).toBe("PENDING_ADMIN");
+    expect(
+      await Commission.countDocuments({
+        contractId: contract._id,
+        supersededAt: null,
+      })
+    ).toBe(0);
   });
 
-  it("DECLINED decision does NOT auto-generate commissions; install activation does", async () => {
+  it("manager DECLINED is terminal and does NOT escalate to admin", async () => {
     const { am, contract } = await makeApprovedContract();
     const a = await authService.ensureForContract(contract._id.toString());
-    await authService.decide(
+    const after = await authService.decideManager(
       a._id.toString(),
       "DECLINED",
       am._id.toString(),
       "wait for install"
     );
+    expect(after.status).toBe("DECLINED_BY_MANAGER");
     expect(
       await Commission.countDocuments({ contractId: contract._id })
     ).toBe(0);
 
-    // Install activation falls back through service.resolveByInstallActivation
+    // Admin trying to decide on a manager-declined request must fail.
+    await expect(
+      authService.decideAdmin(
+        a._id.toString(),
+        "APPROVED",
+        am._id.toString(),
+        "override"
+      )
+    ).rejects.toThrow(/awaiting admin/);
+
+    // Install activation falls back through resolveByInstallActivation.
     await authService.resolveByInstallActivation(contract._id.toString());
     expect(
       await Commission.countDocuments({
@@ -81,26 +94,118 @@ describe("AdvancePayAuthorization (Review 1.1 §8)", () => {
         supersededAt: null,
       })
     ).toBeGreaterThan(0);
-    void commissionService;
   });
 
-  it("idempotent commission generation — won't duplicate on re-trigger", async () => {
-    const { am, contract } = await makeApprovedContract();
+  it("both manager AND admin must APPROVE before commissions fire", async () => {
+    const { admin, am, contract } = await makeApprovedContract();
     const a = await authService.ensureForContract(contract._id.toString());
-    await authService.decide(
+    await authService.decideManager(
       a._id.toString(),
-      "AUTHORIZED",
+      "APPROVED",
       am._id.toString(),
       ""
     );
+    expect(
+      await Commission.countDocuments({ contractId: contract._id })
+    ).toBe(0);
+    const after = await authService.decideAdmin(
+      a._id.toString(),
+      "APPROVED",
+      admin._id.toString(),
+      "final sign-off"
+    );
+    expect(after.status).toBe("AUTHORIZED");
+    expect(
+      await Commission.countDocuments({
+        contractId: contract._id,
+        supersededAt: null,
+      })
+    ).toBeGreaterThan(0);
+  });
+
+  it("admin DECLINED defers commission to install activation (idempotent)", async () => {
+    const { admin, am, contract } = await makeApprovedContract();
+    const a = await authService.ensureForContract(contract._id.toString());
+    await authService.decideManager(
+      a._id.toString(),
+      "APPROVED",
+      am._id.toString(),
+      ""
+    );
+    const after = await authService.decideAdmin(
+      a._id.toString(),
+      "DECLINED",
+      admin._id.toString(),
+      "too risky"
+    );
+    expect(after.status).toBe("DECLINED_BY_ADMIN");
+    expect(
+      await Commission.countDocuments({ contractId: contract._id })
+    ).toBe(0);
+
+    await authService.resolveByInstallActivation(contract._id.toString());
     const firstCount = await Commission.countDocuments({
       contractId: contract._id,
     });
-    // Trigger the install fallback — should be a no-op since commissions exist.
+    expect(firstCount).toBeGreaterThan(0);
+    // Re-trigger should be a no-op (idempotent).
     await authService.resolveByInstallActivation(contract._id.toString());
-    const secondCount = await Commission.countDocuments({
-      contractId: contract._id,
-    });
-    expect(secondCount).toBe(firstCount);
+    expect(
+      await Commission.countDocuments({ contractId: contract._id })
+    ).toBe(firstCount);
+    void commissionService;
+  });
+});
+
+describe("commissionBreakdownForUser (Review 1.2)", () => {
+  it("buckets a fully-AUTHORIZED contract into paidEarly", async () => {
+    const { admin, am, agent, contract } = await makeApprovedContract();
+    const a = await authService.ensureForContract(contract._id.toString());
+    await authService.decideManager(
+      a._id.toString(),
+      "APPROVED",
+      am._id.toString(),
+      ""
+    );
+    await authService.decideAdmin(
+      a._id.toString(),
+      "APPROVED",
+      admin._id.toString(),
+      ""
+    );
+    const breakdown = await commissionService.commissionBreakdownForUser(
+      agent._id.toString()
+    );
+    expect(breakdown.paidEarlyCents).toBeGreaterThan(0);
+    expect(breakdown.deferredCents).toBe(0);
+    expect(breakdown.pendingEarlyCents).toBe(0);
+  });
+
+  it("buckets a PENDING_MANAGER contract into pendingEarly", async () => {
+    const { agent, contract } = await makeApprovedContract();
+    await authService.ensureForContract(contract._id.toString());
+    const breakdown = await commissionService.commissionBreakdownForUser(
+      agent._id.toString()
+    );
+    expect(breakdown.pendingEarlyCents).toBeGreaterThan(0);
+    expect(breakdown.paidEarlyCents).toBe(0);
+    expect(breakdown.totalPotentialCents).toBe(breakdown.pendingEarlyCents);
+  });
+
+  it("buckets a manager-DECLINED contract into deferred", async () => {
+    const { am, agent, contract } = await makeApprovedContract();
+    const a = await authService.ensureForContract(contract._id.toString());
+    await authService.decideManager(
+      a._id.toString(),
+      "DECLINED",
+      am._id.toString(),
+      ""
+    );
+    const breakdown = await commissionService.commissionBreakdownForUser(
+      agent._id.toString()
+    );
+    expect(breakdown.deferredCents).toBeGreaterThan(0);
+    expect(breakdown.pendingEarlyCents).toBe(0);
+    expect(breakdown.paidEarlyCents).toBe(0);
   });
 });

@@ -29,13 +29,17 @@ export type EventMap = {
   // Per Review 1.1 §1: generation approval gate.
   "contract.generation_requested": { contractId: string };
   "contract.generation_approved": { contractId: string; agentId: string };
-  // Per Review 1.1 §8: AM advance-payment authorization.
+  // Per Review 1.1 §8 + Review 1.2 (2026-05-04): two-stage advance-payment
+  // authorization. Stage 1 = manager, Stage 2 = admin (only after manager
+  // approval). `decision` is the decision at THAT stage; `stage` indicates
+  // which gate just decided.
   "advance_pay_auth.requested": { contractId: string; authorizationId: string };
   "advance_pay_auth.decided": {
     contractId: string;
     authorizationId: string;
-    decision: "AUTHORIZED" | "DECLINED";
+    decision: "APPROVED" | "DECLINED";
     decidedBy: string;
+    stage: "MANAGER" | "ADMIN";
   };
   // Per Review 1.1 §7: bonus/commission reversal review.
   "installation.reversed": { installationId: string; contractId: string };

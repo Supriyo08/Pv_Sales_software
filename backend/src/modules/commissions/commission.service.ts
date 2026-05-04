@@ -193,6 +193,227 @@ export async function effectiveBaseForCommission(contract: {
   return Math.max(0, contract.amountCents - reduction);
 }
 
+/**
+ * Per Review 1.2 (2026-05-04): dry-run commission calculator. Given a contract
+ * and a user, returns what THIS user would earn from this contract — agent
+ * portion (with split if configured) or manager override. Used by the agent
+ * commission breakdown report so the agent can see "potential earnings"
+ * before commissions actually fire.
+ */
+export async function potentialCommissionForUser(
+  contract: {
+    _id: unknown;
+    amountCents: number;
+    currency: string;
+    paymentMethod?: string;
+    installmentPlanId?: unknown;
+    solutionVersionId: unknown;
+    customerId: unknown;
+    agentId: unknown;
+    managerId?: unknown;
+  },
+  userId: string
+): Promise<number> {
+  const version = await SolutionVersion.findById(
+    contract.solutionVersionId as Types.ObjectId
+  ).lean();
+  if (!version) return 0;
+  const effectiveBase = await effectiveBaseForCommission(contract);
+  const customer = await Customer.findById(
+    contract.customerId as Types.ObjectId
+  ).lean();
+  const split = customer?.commissionSplit ?? null;
+  const splits =
+    split && split.agentSplits && split.agentSplits.length > 0
+      ? split.agentSplits.map((e) => ({
+          userId: e.userId.toString(),
+          bp: e.bp,
+        }))
+      : [{ userId: (contract.agentId as Types.ObjectId).toString(), bp: 10_000 }];
+
+  // Is this user one of the agent beneficiaries?
+  const agentEntry = splits.find((s) => s.userId === userId);
+  if (agentEntry && version.agentBp > 0) {
+    const fullAgent = calcCommissionCents(effectiveBase, version.agentBp);
+    return Math.round((fullAgent * agentEntry.bp) / 10_000);
+  }
+
+  // Is this user the manager beneficiary?
+  let managerBeneficiaryId: string | null = null;
+  if (split?.managerOverrideBeneficiaryId) {
+    managerBeneficiaryId = split.managerOverrideBeneficiaryId.toString();
+  } else if (contract.managerId) {
+    managerBeneficiaryId = (contract.managerId as Types.ObjectId).toString();
+  } else if (splits.length > 0) {
+    const primaryAgent = await User.findById(splits[0]!.userId).lean();
+    managerBeneficiaryId = primaryAgent?.managerId
+      ? (primaryAgent.managerId as Types.ObjectId).toString()
+      : null;
+  }
+
+  if (managerBeneficiaryId === userId && version.managerBp > 0) {
+    let totalAgent = 0;
+    for (const s of splits) {
+      const fullAgent = calcCommissionCents(effectiveBase, version.agentBp);
+      totalAgent += Math.round((fullAgent * s.bp) / 10_000);
+    }
+    return calcCommissionCents(totalAgent, version.managerBp);
+  }
+
+  return 0;
+}
+
+/**
+ * Per Review 1.2 (2026-05-04): "you've these money that are potentially
+ * yours; of these, X have been approved by the manager to be paid right
+ * away, Y have been denied / pay only on installation."
+ *
+ * Buckets every approved contract this user has a stake in:
+ *   - paid_early   : commission already in the ledger via early-pay AUTHORIZED
+ *   - paid_after_install : commission in the ledger because installation activated
+ *   - pending_early : auth still in PENDING_MANAGER or PENDING_ADMIN
+ *   - deferred     : auth declined or no auth — will fire on install activation
+ */
+export async function commissionBreakdownForUser(userId: string) {
+  const { AdvancePayAuthorization } = await import(
+    "../advance-pay-authorizations/advance-pay-auth.model"
+  );
+  const userObjId = new Types.ObjectId(userId);
+
+  // 1) Approved contracts where the user is the direct agent or manager.
+  const direct = await Contract.find({
+    status: "SIGNED",
+    approvedAt: { $ne: null },
+    $or: [{ agentId: userObjId }, { managerId: userObjId }],
+  }).lean();
+
+  // 2) Contracts where the user appears in a customer's commissionSplit.
+  const customers = await Customer.find(
+    {
+      $or: [
+        { "commissionSplit.agentSplits.userId": userObjId },
+        { "commissionSplit.managerOverrideBeneficiaryId": userObjId },
+        { "commissionSplit.managerBonusBeneficiaryId": userObjId },
+      ],
+    },
+    { _id: 1 }
+  ).lean();
+  let viaSplit: typeof direct = [];
+  if (customers.length > 0) {
+    viaSplit = await Contract.find({
+      customerId: { $in: customers.map((c) => c._id) },
+      status: "SIGNED",
+      approvedAt: { $ne: null },
+    }).lean();
+  }
+
+  const seen = new Set<string>();
+  const all: typeof direct = [];
+  for (const c of [...direct, ...viaSplit]) {
+    const k = c._id.toString();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    all.push(c);
+  }
+  if (all.length === 0) {
+    return {
+      userId,
+      totalPotentialCents: 0,
+      paidEarlyCents: 0,
+      paidAfterInstallCents: 0,
+      pendingEarlyCents: 0,
+      deferredCents: 0,
+      pendingItemCount: 0,
+      deferredItemCount: 0,
+      paidEarlyItemCount: 0,
+      paidAfterInstallItemCount: 0,
+    };
+  }
+
+  const contractIds = all.map((c) => c._id);
+  const auths = await AdvancePayAuthorization.find({
+    contractId: { $in: contractIds },
+  }).lean();
+  const authByContract = new Map(
+    auths.map((a) => [a.contractId.toString(), a])
+  );
+
+  const commissions = await Commission.find({
+    beneficiaryUserId: userObjId,
+    supersededAt: null,
+    contractId: { $in: contractIds },
+  }).lean();
+  const paidByContract = new Map<string, number>();
+  for (const c of commissions) {
+    if (!c.contractId) continue;
+    const k = c.contractId.toString();
+    paidByContract.set(k, (paidByContract.get(k) ?? 0) + c.amountCents);
+  }
+
+  let paidEarlyCents = 0;
+  let paidAfterInstallCents = 0;
+  let pendingEarlyCents = 0;
+  let deferredCents = 0;
+  let pendingItemCount = 0;
+  let deferredItemCount = 0;
+  let paidEarlyItemCount = 0;
+  let paidAfterInstallItemCount = 0;
+
+  for (const contract of all) {
+    const k = contract._id.toString();
+    const actualPaid = paidByContract.get(k) ?? 0;
+    const auth = authByContract.get(k);
+    const status = auth?.status ?? null;
+
+    if (actualPaid > 0) {
+      // Already in the ledger — bucket by how it got there.
+      if (status === "AUTHORIZED") {
+        paidEarlyCents += actualPaid;
+        paidEarlyItemCount++;
+      } else {
+        // Legacy contract.signed path or post-install deferred path — both
+        // mean "paid". Treat anything-not-AUTHORIZED as paid_after_install.
+        paidAfterInstallCents += actualPaid;
+        paidAfterInstallItemCount++;
+      }
+      continue;
+    }
+
+    // No commission yet — estimate the potential amount.
+    const potential = await potentialCommissionForUser(contract, userId);
+    if (potential <= 0) continue;
+
+    if (
+      status === "PENDING" ||
+      status === "PENDING_MANAGER" ||
+      status === "PENDING_ADMIN"
+    ) {
+      pendingEarlyCents += potential;
+      pendingItemCount++;
+    } else {
+      // DECLINED_*, RESOLVED_BY_INSTALL, or no auth — waiting on installation.
+      deferredCents += potential;
+      deferredItemCount++;
+    }
+  }
+
+  const totalPotentialCents =
+    paidEarlyCents + paidAfterInstallCents + pendingEarlyCents + deferredCents;
+
+  return {
+    userId,
+    totalPotentialCents,
+    paidEarlyCents,
+    paidAfterInstallCents,
+    pendingEarlyCents,
+    deferredCents,
+    pendingItemCount,
+    deferredItemCount,
+    paidEarlyItemCount,
+    paidAfterInstallItemCount,
+  };
+}
+
 export async function recalculateContractsForSolution(
   solutionId: string,
   reason: string

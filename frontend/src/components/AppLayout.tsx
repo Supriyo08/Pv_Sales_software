@@ -29,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { useAuth, useRole } from "../store/auth";
+import { useAuth, useRole, decodeRole } from "../store/auth";
 import { cn } from "../lib/cn";
 import {
   DropdownMenu,
@@ -64,9 +64,18 @@ const pendingCounts = {
     });
     return Array.isArray(data) ? data.length : 0;
   },
-  advancePay: async () =>
-    (await api.get<{ count: number }>("/advance-pay-authorizations/pending-count")).data
-      .count,
+  advancePay: async () => {
+    // Per Review 1.2 (2026-05-04): role-aware count — managers count their
+    // stage-1 queue, admins count their stage-2 queue.
+    const role = decodeRole(useAuth.getState().accessToken);
+    const stage =
+      role === "AREA_MANAGER" ? "MANAGER" : role === "ADMIN" ? "ADMIN" : "ANY";
+    const { data } = await api.get<{ count: number }>(
+      "/advance-pay-authorizations/pending-count",
+      { params: { stage } }
+    );
+    return data.count;
+  },
   reversalReviews: async () =>
     (await api.get<{ count: number }>("/reversal-reviews/pending-count")).data.count,
 };

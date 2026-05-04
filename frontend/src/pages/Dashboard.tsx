@@ -15,6 +15,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { StatusBadge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
+import { CommissionBreakdownCard } from "../components/CommissionBreakdownCard";
 import { formatCents, formatDate, currentPeriod } from "../lib/format";
 import { useAuth, useRole, decodeUserId } from "../store/auth";
 import { cn } from "../lib/cn";
@@ -157,6 +158,11 @@ export function Dashboard() {
           />
         </div>
       )}
+
+      {/* Per Review 1.2 (2026-05-04): potential commissions breakdown — visible
+          to anyone who has a stake in approved contracts (agents always; admins
+          + AMs see their own row, viewing other people's is via Reports). */}
+      <CommissionBreakdownCard />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card padding={false} className="lg:col-span-2 overflow-hidden">
