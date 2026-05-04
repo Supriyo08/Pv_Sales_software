@@ -57,26 +57,108 @@ button {
    reset + font stack would otherwise override Word's typography, so we
    isolate the preview area and let docx-preview's injected styles take over.
    ────────────────────────────────────────────────────────────────────── */
+
+/* Per follow-up (round 4, 2026-05-04): Word documents commonly reference fonts
+   that ship with Microsoft Office (Aptos, Calibri, Cambria, …) but are NOT
+   installed in browsers. When docx-preview emits `font-family: Aptos`, the
+   browser can't find the face and falls back to its serif default — that's
+   why the footer in tempxwebapp.docx renders in the wrong typeface.
+
+   We can't intercept docx-preview's inline styles cleanly via CSS specificity
+   (it injects its own !important rules that scope tightly per-class). The
+   robust cure is `@font-face` aliasing: declare the missing fonts but point
+   their `src` at locally-installed safe fonts (Arial first). The browser then
+   USES those locals wherever the missing name is requested, no specificity
+   fight. Works for the current template AND any future template change —
+   header, footer, body — as long as the document uses a Microsoft-proprietary
+   font. Genuinely web-safe fonts (Times New Roman, Verdana, Garamond, …) keep
+   their original look. */
+@font-face {
+  font-family: "Aptos";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Aptos Display";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Aptos Narrow";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial Narrow"), local("Arial"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Calibri";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Calibri Light";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Cambria";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Times New Roman"), local("Liberation Serif"), local("serif");
+}
+@font-face {
+  font-family: "Cambria Math";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Times New Roman"), local("Liberation Serif"), local("serif");
+}
+@font-face {
+  font-family: "Candara";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Corbel";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Arial"), local("Helvetica Neue"), local("Helvetica"),
+    local("Liberation Sans"), local("sans-serif");
+}
+@font-face {
+  font-family: "Constantia";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Times New Roman"), local("Liberation Serif"), local("serif");
+}
+@font-face {
+  font-family: "Consolas";
+  font-style: normal;
+  font-weight: 100 900;
+  src: local("Menlo"), local("Monaco"), local("Courier New"),
+    local("Liberation Mono"), local("monospace");
+}
+
 .docx-preview-host {
   background: #e5e7eb; /* slate-200 — gives the page-shadow contrast */
   isolation: isolate;
 }
 
+/* Base font for any element that doesn't have its own font-family set. Light
+   touch — only fills the gap, doesn't override Word's choices. */
 .docx-preview-host .docx-rendered {
   font-family: Arial, "Liberation Sans", "Helvetica Neue", Helvetica, sans-serif;
   color: #0f172a;
-  /* Center the rendered "pages" with breathing room */
   padding: 1.5rem 1rem;
-}
-
-/* Per follow-up (round 3, 2026-05-02): force the Arial cascade onto every
-   descendant so .docx footers/headers don't fall back to a random serif when
-   the embedded font isn't installed. Inline `font-family` declarations on
-   individual runs are left intact (they win via specificity), but anything
-   inheriting from the wrapper now gets Arial. */
-.docx-preview-host .docx-rendered,
-.docx-preview-host .docx-rendered * {
-  font-family: Arial, "Liberation Sans", "Helvetica Neue", Helvetica, sans-serif !important;
 }
 
 .docx-preview-host .docx-rendered section.docx {

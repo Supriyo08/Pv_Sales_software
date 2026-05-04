@@ -99,6 +99,63 @@ export function ContractNew() {
   const selectedVersion = versions.find((v) => v._id === versionId);
   const selectedPlan = activePlans.find((p) => p._id === installmentPlanId);
 
+  // Per Review 1.2 (2026-05-04): when the version has a pricingMatrix, the
+  // contract form must restrict payment method + plan choices to combinations
+  // that actually exist in the matrix. Empty matrix → fall back to all
+  // methods/plans (legacy behaviour pre-matrix).
+  const matrixRows = selectedVersion?.pricingMatrix ?? [];
+  const matrixActive = matrixRows.length > 0;
+
+  const allowedMethods = useMemo(() => {
+    if (!matrixActive) return PAYMENT_METHODS.map((p) => p.value);
+    const set = new Set<ContractPaymentMethod>();
+    for (const r of matrixRows) set.add(r.paymentMethod);
+    return PAYMENT_METHODS.map((p) => p.value).filter((m) => set.has(m));
+  }, [matrixActive, matrixRows]);
+
+  const allowedPlanIds = useMemo(() => {
+    if (!matrixActive) return null; // null = no matrix filter, allow all
+    const ids = new Set<string>();
+    let allowsUnplanned = false;
+    for (const r of matrixRows) {
+      if (r.paymentMethod !== paymentMethod) continue;
+      if (r.installmentPlanId) ids.add(r.installmentPlanId);
+      else allowsUnplanned = true;
+    }
+    return { ids, allowsUnplanned };
+  }, [matrixActive, matrixRows, paymentMethod]);
+
+  const visiblePlans = useMemo(() => {
+    if (!allowedPlanIds) return activePlans;
+    return activePlans.filter((p) => allowedPlanIds.ids.has(p._id));
+  }, [activePlans, allowedPlanIds]);
+
+  // Snap the chosen payment method to the first one allowed by the matrix
+  // whenever the version (and therefore the matrix) changes — otherwise the
+  // user is stuck on a default like ONE_TIME that the version may not offer.
+  useEffect(() => {
+    if (allowedMethods.length === 0) return;
+    if (!allowedMethods.includes(paymentMethod)) {
+      setPaymentMethod(allowedMethods[0]!);
+      setInstallmentPlanId("");
+      setAdvanceEuro("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedMethods.join(",")]);
+
+  // Same for the plan: clear if it's no longer valid for the chosen method.
+  useEffect(() => {
+    if (!allowedPlanIds) return;
+    if (
+      installmentPlanId &&
+      !allowedPlanIds.ids.has(installmentPlanId) &&
+      !allowedPlanIds.allowsUnplanned
+    ) {
+      setInstallmentPlanId("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentMethod, allowedPlanIds]);
+
   const amountNum = parseFloat(amountEuro);
   const amountCents = isNaN(amountNum) ? 0 : Math.round(amountNum * 100);
   const advanceCents = Math.round(parseFloat(advanceEuro || "0") * 100);
@@ -306,6 +363,14 @@ export function ContractNew() {
             </div>
           )}
 
+          {matrixActive && (
+            <div className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-900">
+              This solution version has a <strong>pricing matrix</strong> configured —
+              only payment methods and plans defined in the matrix are selectable.
+              Final price + commission will be derived from the matching matrix row.
+            </div>
+          )}
+
           <Field label="Payment method" required>
             <Select
               value={paymentMethod}
@@ -319,7 +384,7 @@ export function ContractNew() {
                 if (m === "FULL_INSTALLMENTS") setAdvanceEuro("");
               }}
             >
-              {PAYMENT_METHODS.map((p) => (
+              {PAYMENT_METHODS.filter((p) => allowedMethods.includes(p.value)).map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
@@ -328,6 +393,12 @@ export function ContractNew() {
             <p className="text-xs text-slate-500 mt-1">
               {PAYMENT_METHODS.find((p) => p.value === paymentMethod)?.help}
             </p>
+            {matrixActive && allowedMethods.length === 0 && (
+              <p className="text-xs text-amber-700 mt-1">
+                The pricing matrix on this version has no rows. Ask an admin to
+                configure at least one before creating contracts.
+              </p>
+            )}
           </Field>
 
           {paymentMethod !== "ONE_TIME" && (
@@ -338,13 +409,19 @@ export function ContractNew() {
                 required
               >
                 <option value="">— Select plan —</option>
-                {activePlans.map((p) => (
+                {visiblePlans.map((p) => (
                   <option key={p._id} value={p._id}>
                     {p.name} · {p.months} months ·{" "}
                     {p.surchargeBp > 0 ? `${p.surchargeBp / 100}% surcharge` : "no surcharge"}
                   </option>
                 ))}
               </Select>
+              {matrixActive && visiblePlans.length === 0 && (
+                <p className="text-xs text-amber-700 mt-1">
+                  No installment plans are linked to this payment method in the
+                  pricing matrix.
+                </p>
+              )}
             </Field>
           )}
 
