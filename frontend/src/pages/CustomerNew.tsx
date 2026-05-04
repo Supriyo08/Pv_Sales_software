@@ -12,7 +12,12 @@ const BUILTIN_KEYS = new Set(["fiscalCode", "fullName", "email", "phone"]);
 
 export function CustomerNew() {
   const navigate = useNavigate();
-  const { data: schema } = useQuery<CustomerFormConfig>({
+  const {
+    data: schema,
+    isLoading: schemaLoading,
+    error: schemaError,
+    refetch: refetchSchema,
+  } = useQuery<CustomerFormConfig>({
     queryKey: ["customer-form"],
     queryFn: async () => (await api.get("/customer-form")).data,
   });
@@ -63,7 +68,30 @@ export function CustomerNew() {
     }
   };
 
-  if (!schema) return <p className="text-slate-500">Loading…</p>;
+  // Distinguish "still loading" vs "fetch failed" vs "actually empty" so the
+  // page never hangs silently on undefined.
+  if (schemaLoading) return <p className="text-slate-500">Loading…</p>;
+  if (schemaError || !schema) {
+    const msg =
+      (schemaError as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error ??
+      (schemaError as Error | undefined)?.message ??
+      "Couldn't load the customer form schema.";
+    return (
+      <div>
+        <BackLink to="/customers">Back to customers</BackLink>
+        <PageHeader title="New customer" />
+        <Card className="max-w-xl">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3">
+            {msg}
+          </div>
+          <Button variant="outline" onClick={() => refetchSchema()}>
+            Retry
+          </Button>
+        </Card>
+      </div>
+    );
+  }
 
   // Sort fields by `order` for stable display.
   const sorted = [...schema.fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));

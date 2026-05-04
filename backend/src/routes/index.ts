@@ -20,6 +20,7 @@ import pricingFormulaRoutes from "../modules/custom-pricing/pricing.routes";
 import contractEditRequestRoutes from "../modules/contract-edit-requests/contract-edit-request.routes";
 import advancePayAuthRoutes from "../modules/advance-pay-authorizations/advance-pay-auth.routes";
 import reversalReviewRoutes from "../modules/reversal-reviews/reversal-review.routes";
+import customerFormRoutes from "../modules/customer-form/customer-form.routes";
 
 const router = Router();
 
@@ -44,5 +45,9 @@ router.use("/pricing-formulas", pricingFormulaRoutes);
 router.use("/contract-edit-requests", contractEditRequestRoutes);
 router.use("/advance-pay-authorizations", advancePayAuthRoutes);
 router.use("/reversal-reviews", reversalReviewRoutes);
+// Per Review 1.0 §8 — admin-customisable New Customer form schema. The route
+// file existed since v1.1 but wasn't mounted, so /v1/customer-form returned
+// 404 and the New Customer page hung on "Loading…" forever.
+router.use("/customer-form", customerFormRoutes);
 
 export default router;
