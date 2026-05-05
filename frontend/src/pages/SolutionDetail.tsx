@@ -24,7 +24,9 @@ export function SolutionDetail() {
   const role = useRole();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
-  const [validFrom, setValidFrom] = useState("");
+  // Per Review 1.3 (2026-05-04): default `validFrom` to today so admins don't
+  // have to type the date every time. Editable, of course.
+  const [validFrom, setValidFrom] = useState(() => new Date().toISOString().slice(0, 10));
   const [basePrice, setBasePrice] = useState("");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
@@ -118,7 +120,7 @@ export function SolutionDetail() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["solution-versions", id] });
       setShowForm(false);
-      setValidFrom("");
+      setValidFrom(new Date().toISOString().slice(0, 10));
       setBasePrice("");
       setMinPrice("");
       setMaxPrice("");

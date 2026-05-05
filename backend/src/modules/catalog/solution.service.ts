@@ -282,6 +282,31 @@ export async function createVersion(
     throw new HttpError(400, "minPriceCents must be <= maxPriceCents");
   }
 
+  // Per Review 1.3 (2026-05-04): the base price MUST sit inside the price
+  // range when a range is configured — otherwise the matrix gets contradicted
+  // (e.g. base €10k but range capped at €8k means every contract is "out of
+  // range" by definition).
+  if (
+    input.minPriceCents !== null &&
+    input.minPriceCents !== undefined &&
+    input.basePriceCents < input.minPriceCents
+  ) {
+    throw new HttpError(
+      400,
+      `basePriceCents (${input.basePriceCents}) must be ≥ minPriceCents (${input.minPriceCents})`
+    );
+  }
+  if (
+    input.maxPriceCents !== null &&
+    input.maxPriceCents !== undefined &&
+    input.basePriceCents > input.maxPriceCents
+  ) {
+    throw new HttpError(
+      400,
+      `basePriceCents (${input.basePriceCents}) must be ≤ maxPriceCents (${input.maxPriceCents})`
+    );
+  }
+
   const previous = await SolutionVersion.findOne({ solutionId, validTo: null }).sort({
     validFrom: -1,
   });

@@ -346,8 +346,17 @@ export function ContractNew() {
           {solutionId && (
             <Field label="Solution version" required>
               <Select value={versionId} onChange={(e) => setVersionId(e.target.value)} required>
+                {/* Per Review 1.3: hide expired versions (validTo in the past)
+                    and not-yet-effective versions (validFrom in the future) so
+                    agents can never pick a closed pricing window by mistake. */}
                 {versions
-                  .filter((v) => v.active)
+                  .filter((v) => {
+                    if (!v.active) return false;
+                    const now = Date.now();
+                    if (new Date(v.validFrom).getTime() > now) return false;
+                    if (v.validTo && new Date(v.validTo).getTime() <= now) return false;
+                    return true;
+                  })
                   .map((v) => (
                     <option key={v._id} value={v._id}>
                       {new Date(v.validFrom).toISOString().slice(0, 10)} ·{" "}

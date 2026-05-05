@@ -1053,3 +1053,106 @@ templates, and the new financial views (payment ledger + report drill-down).
   earlier)
 - `frontend/src/index.css` — `.docx-preview-host` scoped styles + print rules
 - `frontend/package.json` — `docx-preview`, `html2pdf.js`
+
+---
+
+# v1.5 Brief — Review 1.3 (2026-05-04)
+
+Source: `Temp. Review 1.3 - SolarNetwork - Dev..docx`. Below splits items into
+**shipped this round** (mid-context partial release) vs **queued for the v1.5
+sprint** so nothing slips. Backend tests still 97/97; frontend build clean.
+
+## Shipped now
+
+- **`@@placeholder` substitution survives Word run-splitting**
+  `template.service.substituteDocxXml` now does (1) strip inter-run noise
+  (`<w:proofErr/>`, `<w:bookmark*/>`, `<w:lastRenderedPageBreak/>`), (2) the
+  existing single-run regex pass, then (3) a paragraph-collapse recovery pass:
+  for any `<w:p>` whose concatenated `<w:t>` text still contains a `@@tag`
+  pattern, we know Word split it across runs — collapse those runs into one,
+  preserving the paragraph's `<w:pPr>` and the first run's `<w:rPr>`. Result:
+  multi-occurrence placeholders (`@@date` × 3) AND placeholders whose runs
+  Word fragmented (`@@nome_agente`) both substitute correctly.
+- **Hide expired / not-yet-effective versions from contract creation**
+  `ContractNew` filter now checks `validFrom <= now` AND
+  (`validTo == null` OR `validTo > now`) — agents can never pick a closed
+  pricing window.
+- **Default `validFrom` = today on new solution version**
+  `SolutionDetail` form pre-fills today's date (editable). Resets to today
+  after each save instead of an empty string.
+- **`basePriceCents` is forced inside `[minPriceCents, maxPriceCents]`**
+  `solution.service.createVersion` rejects out-of-range base price with a
+  clear 400 message (was previously silent — letting admins create matrices
+  whose every contract was "out of range" by definition).
+- **Cancellation reason is now required**
+  `contract.controller.cancelSchema` requires `reason` (3–500 chars). Surfaces
+  in audit log, contract history, and reversal-review notifications.
+
+## Queued for v1.5 sprint
+
+### Customer
+- Required pre-deal fields enforced: Name, Surname, Date of birth (with
+  client + server validation, e.g. ≥18, valid ISO date).
+- "Agente in prestazione occasionale" + annual fiscal limit tracking on
+  the User model (Italian gig-work cap).
+
+### Solution / Contract templates
+- New version w/ different price → force a "review pricing matrix"
+  confirmation step before save.
+- Templates list → show the linked solution(s) column (already a chip — make
+  the binding admin-only, agents cannot reassign).
+- Enforce **1 solution = 1 template max** at the backend (unique compound
+  index on `templates.solutionIds`).
+
+### Contract workflow (most-changed area)
+- Generation gate: agent generates → admin checks fields & approves → agent
+  notified, gets print/download → agent re-uploads signed → admin approves
+  signed scan. Currently the admin-approval-of-generated-PDF step exists but
+  the print/.docx/PDF buttons are not gated for agents — gate them.
+- Agent view: hide the manager-commission column on `ContractDetail` when
+  `role === "AGENT"`.
+- Contracts table: drop the `_id` chip column, add Agent name + Solution
+  name (lookup via the existing `users` + `catalog/solutions` queries).
+- Re-activate a cancelled contract (ADMIN only): new endpoint
+  `POST /v1/contracts/:id/reactivate` that flips status back to `DRAFT` (or
+  `SIGNED` if a signedAt is present), clears `cancelledAt/cancellationReason`,
+  un-supersedes commissions if applicable.
+- Admin can DELETE a generated contract draft anytime → endpoint clears
+  `generatedDocumentId`/`generationApprovedAt`, agent can re-generate.
+- "Print" on the contracts table prints **only the template bound to the
+  solution** (drop the template-picker step for the agent).
+- Replace the inline contract-detail preview with an on-demand "Preview"
+  button that opens a modal — saves vertical real-estate.
+- Replace the "Active commissions" tab with an inline "Effective amount next
+  to %" callout in the Solution & payment card.
+- Notes/chat section on `ContractDetail`: new `ContractNote` collection,
+  every authenticated viewer can post, list-with-pagination view.
+
+### Attachments framework (new module)
+- New `ContractAttachmentSpec` collection: per-tag rules `{ tag, label,
+  type: "PHOTO" | "TEXT" | "FILE", photoCount?, validation?, when:
+  "ALWAYS" | "PER_SOLUTION" | "PER_INSTALLMENT_PLAN", solutionIds?, planIds?,
+  mandatoryAt: "BEFORE_SIGNING" | "ON_CREATE" | "ON_INSTALL" }`.
+- Per-contract attachment status: which specs are satisfied, which are still
+  required, gate sign/install accordingly.
+- Admin form: configure spec list in `/admin/attachments`. Default seed: ID
+  card front + back (PHOTO × 2, ALWAYS, mandatory BEFORE_SIGNING).
+
+### Re-render guarantee on download
+- `DocumentActions` Download `.docx` / Download PDF / Print buttons should
+  call `POST /:id/render-docx` first (always, no cache), then operate on the
+  freshly-returned blob. Today the DocxPreview-rendered blob can be stale if
+  the user filled new placeholder values without clicking Re-render.
+
+## Files touched this round
+
+- `backend/src/modules/templates/template.service.ts` — `substituteDocxXml`
+  rewritten with three-stage robustness (noise strip → regex → paragraph
+  collapse), helper `buildRun` + `collapseSplitPlaceholderParagraphs`.
+- `backend/src/modules/catalog/solution.service.ts` — basePrice ∈ [min,max]
+  guard in `createVersion`.
+- `backend/src/modules/contracts/contract.controller.ts` — `cancelSchema`
+  requires `reason` (≥3 chars).
+- `frontend/src/pages/ContractNew.tsx` — version filter excludes
+  expired/future windows.
+- `frontend/src/pages/SolutionDetail.tsx` — default `validFrom = today`.

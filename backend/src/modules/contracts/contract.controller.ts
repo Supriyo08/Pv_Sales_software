@@ -28,7 +28,14 @@ const createSchema = z.object({
   path: ["solutionVersionId"],
 });
 
-const cancelSchema = z.object({ reason: z.string().optional() });
+// Per Review 1.3 (2026-05-04): cancellation must always include a reason —
+// it surfaces in audit log, contract history, and reversal-review notifications.
+const cancelSchema = z.object({
+  reason: z
+    .string()
+    .min(3, "A cancellation reason is required (min 3 chars)")
+    .max(500),
+});
 
 export const list: RequestHandler = async (req, res, next) => {
   try {
@@ -187,7 +194,7 @@ export const cancel: RequestHandler = async (req, res, next) => {
     if (!req.user) throw new HttpError(401, "Unauthenticated");
     const body = cancelSchema.parse(req.body);
     const before = (await contractService.getById(req.params.id!, await buildScope(req.user))).toObject();
-    const c = await contractService.cancel(req.params.id!, body.reason ?? "");
+    const c = await contractService.cancel(req.params.id!, body.reason);
     void audit.log({
       actorId: req.user.sub,
       action: "contract.cancel",
