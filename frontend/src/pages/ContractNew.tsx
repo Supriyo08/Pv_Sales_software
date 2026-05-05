@@ -16,6 +16,7 @@ import type {
   SolutionVersion,
   InstallmentPlan,
   ContractPaymentMethod,
+  SolutionPricingMatrixRow,
 } from "../lib/api-types";
 
 const PAYMENT_METHODS: { value: ContractPaymentMethod; label: string; help: string }[] = [
@@ -99,62 +100,107 @@ export function ContractNew() {
   const selectedVersion = versions.find((v) => v._id === versionId);
   const selectedPlan = activePlans.find((p) => p._id === installmentPlanId);
 
-  // Per Review 1.2 (2026-05-04): when the version has a pricingMatrix, the
-  // contract form must restrict payment method + plan choices to combinations
-  // that actually exist in the matrix. Empty matrix → fall back to all
-  // methods/plans (legacy behaviour pre-matrix).
-  const matrixRows = selectedVersion?.pricingMatrix ?? [];
+  // Per Review 1.2 (2026-05-04): pricing matrix on the version drives EVERY
+  // pricing choice. Each matrix row is a pre-priced "tier" that the agent
+  // picks — the row's label, plan, price, advance window, and commissions
+  // auto-fill the form. Empty matrix → fall back to the legacy free-form
+  // payment-method + plan dropdowns.
+  const matrixRows = (selectedVersion?.pricingMatrix ?? []) as SolutionPricingMatrixRow[];
   const matrixActive = matrixRows.length > 0;
 
-  const allowedMethods = useMemo(() => {
-    if (!matrixActive) return PAYMENT_METHODS.map((p) => p.value);
-    const set = new Set<ContractPaymentMethod>();
-    for (const r of matrixRows) set.add(r.paymentMethod);
-    return PAYMENT_METHODS.map((p) => p.value).filter((m) => set.has(m));
-  }, [matrixActive, matrixRows]);
+  // Stable id for a row even when the user hasn't saved (so React keys + state
+  // stay consistent across re-renders). Prefer the Mongo `_id` when present.
+  const rowKey = (r: SolutionPricingMatrixRow, idx: number): string =>
+    r._id ?? `row-${idx}`;
 
-  const allowedPlanIds = useMemo(() => {
-    if (!matrixActive) return null; // null = no matrix filter, allow all
-    const ids = new Set<string>();
-    let allowsUnplanned = false;
-    for (const r of matrixRows) {
-      if (r.paymentMethod !== paymentMethod) continue;
-      if (r.installmentPlanId) ids.add(r.installmentPlanId);
-      else allowsUnplanned = true;
+  // The user's currently selected matrix row.
+  const [selectedTierKey, setSelectedTierKey] = useState<string>("");
+  const selectedTier = useMemo(
+    () =>
+      matrixActive
+        ? matrixRows.find((r, i) => rowKey(r, i) === selectedTierKey)
+        : undefined,
+    [matrixActive, matrixRows, selectedTierKey]
+  );
+
+  // Build a human label for a row when the admin didn't set one explicitly.
+  const planNameById = useMemo(
+    () => new Map(activePlans.map((p) => [p._id, `${p.name} · ${p.months}mo`])),
+    [activePlans]
+  );
+  const tierLabel = (r: SolutionPricingMatrixRow): string => {
+    if (r.label && r.label.trim()) return r.label.trim();
+    const parts: string[] = [];
+    parts.push(
+      r.paymentMethod === "ONE_TIME"
+        ? "One-time"
+        : r.paymentMethod === "ADVANCE_INSTALLMENTS"
+          ? "Advance + installments"
+          : "Full installments"
+    );
+    if (r.installmentPlanId) {
+      parts.push(planNameById.get(r.installmentPlanId) ?? "plan");
     }
-    return { ids, allowsUnplanned };
-  }, [matrixActive, matrixRows, paymentMethod]);
+    if (r.advanceMinCents !== null && r.advanceMinCents !== undefined) {
+      const min = formatCents(r.advanceMinCents, "EUR");
+      const max =
+        r.advanceMaxCents !== null && r.advanceMaxCents !== undefined
+          ? formatCents(r.advanceMaxCents, "EUR")
+          : "no max";
+      parts.push(`advance ${min}–${max}`);
+    }
+    if (r.finalPriceCents) {
+      parts.push(`${formatCents(r.finalPriceCents, "EUR")}`);
+    }
+    return parts.join(" · ");
+  };
 
-  const visiblePlans = useMemo(() => {
-    if (!allowedPlanIds) return activePlans;
-    return activePlans.filter((p) => allowedPlanIds.ids.has(p._id));
-  }, [activePlans, allowedPlanIds]);
-
-  // Snap the chosen payment method to the first one allowed by the matrix
-  // whenever the version (and therefore the matrix) changes — otherwise the
-  // user is stuck on a default like ONE_TIME that the version may not offer.
+  // When the version (and therefore its matrix) changes, default-select the
+  // first row so the form is immediately fillable.
   useEffect(() => {
-    if (allowedMethods.length === 0) return;
-    if (!allowedMethods.includes(paymentMethod)) {
-      setPaymentMethod(allowedMethods[0]!);
-      setInstallmentPlanId("");
+    if (!matrixActive) {
+      setSelectedTierKey("");
+      return;
+    }
+    const firstKey = rowKey(matrixRows[0]!, 0);
+    if (
+      !selectedTierKey ||
+      !matrixRows.some((r, i) => rowKey(r, i) === selectedTierKey)
+    ) {
+      setSelectedTierKey(firstKey);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [versionId, matrixActive, matrixRows.length]);
+
+  // Apply a tier's values to the form (paymentMethod, plan, price, advance).
+  // We only overwrite empty fields when the user is mid-entry — but on the
+  // FIRST application for a given tier we always sync, otherwise the matrix
+  // wouldn't actually be in effect.
+  useEffect(() => {
+    if (!selectedTier) return;
+    setPaymentMethod(selectedTier.paymentMethod);
+    setInstallmentPlanId(selectedTier.installmentPlanId ?? "");
+    if (selectedTier.finalPriceCents != null) {
+      setAmountEuro((selectedTier.finalPriceCents / 100).toFixed(2));
+    } else if (
+      selectedTier.finalPricePct != null &&
+      selectedVersion?.basePriceCents
+    ) {
+      const cents = Math.round(
+        (selectedVersion.basePriceCents * selectedTier.finalPricePct) / 100
+      );
+      setAmountEuro((cents / 100).toFixed(2));
+    }
+    if (
+      selectedTier.paymentMethod === "ADVANCE_INSTALLMENTS" &&
+      selectedTier.advanceMinCents != null
+    ) {
+      setAdvanceEuro((selectedTier.advanceMinCents / 100).toFixed(2));
+    } else if (selectedTier.paymentMethod !== "ADVANCE_INSTALLMENTS") {
       setAdvanceEuro("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allowedMethods.join(",")]);
-
-  // Same for the plan: clear if it's no longer valid for the chosen method.
-  useEffect(() => {
-    if (!allowedPlanIds) return;
-    if (
-      installmentPlanId &&
-      !allowedPlanIds.ids.has(installmentPlanId) &&
-      !allowedPlanIds.allowsUnplanned
-    ) {
-      setInstallmentPlanId("");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paymentMethod, allowedPlanIds]);
+  }, [selectedTierKey]);
 
   const amountNum = parseFloat(amountEuro);
   const amountCents = isNaN(amountNum) ? 0 : Math.round(amountNum * 100);
@@ -363,66 +409,114 @@ export function ContractNew() {
             </div>
           )}
 
-          {matrixActive && (
-            <div className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-900">
-              This solution version has a <strong>pricing matrix</strong> configured —
-              only payment methods and plans defined in the matrix are selectable.
-              Final price + commission will be derived from the matching matrix row.
-            </div>
-          )}
+          {matrixActive ? (
+            <>
+              <div className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-900">
+                This solution version has a <strong>pricing matrix</strong>{" "}
+                configured. Pick one of the pre-priced tiers below — payment
+                method, plan, price and advance window are filled in for you.
+              </div>
 
-          <Field label="Payment method" required>
-            <Select
-              value={paymentMethod}
-              onChange={(e) => {
-                const m = e.target.value as ContractPaymentMethod;
-                setPaymentMethod(m);
-                if (m === "ONE_TIME") {
-                  setInstallmentPlanId("");
-                  setAdvanceEuro("");
-                }
-                if (m === "FULL_INSTALLMENTS") setAdvanceEuro("");
-              }}
-            >
-              {PAYMENT_METHODS.filter((p) => allowedMethods.includes(p.value)).map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </Select>
-            <p className="text-xs text-slate-500 mt-1">
-              {PAYMENT_METHODS.find((p) => p.value === paymentMethod)?.help}
-            </p>
-            {matrixActive && allowedMethods.length === 0 && (
-              <p className="text-xs text-amber-700 mt-1">
-                The pricing matrix on this version has no rows. Ask an admin to
-                configure at least one before creating contracts.
-              </p>
-            )}
-          </Field>
-
-          {paymentMethod !== "ONE_TIME" && (
-            <Field label="Installment plan" required>
-              <Select
-                value={installmentPlanId}
-                onChange={(e) => setInstallmentPlanId(e.target.value)}
-                required
-              >
-                <option value="">— Select plan —</option>
-                {visiblePlans.map((p) => (
-                  <option key={p._id} value={p._id}>
-                    {p.name} · {p.months} months ·{" "}
-                    {p.surchargeBp > 0 ? `${p.surchargeBp / 100}% surcharge` : "no surcharge"}
-                  </option>
-                ))}
-              </Select>
-              {matrixActive && visiblePlans.length === 0 && (
-                <p className="text-xs text-amber-700 mt-1">
-                  No installment plans are linked to this payment method in the
-                  pricing matrix.
+              <Field label="Pricing tier" required>
+                <Select
+                  value={selectedTierKey}
+                  onChange={(e) => setSelectedTierKey(e.target.value)}
+                  required
+                >
+                  <option value="">— Select tier —</option>
+                  {matrixRows.map((r, i) => (
+                    <option key={rowKey(r, i)} value={rowKey(r, i)}>
+                      {tierLabel(r)}
+                    </option>
+                  ))}
+                </Select>
+                {selectedTier && (
+                  <div className="mt-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-700 space-y-0.5">
+                    <div>
+                      <strong className="text-slate-900">Payment method:</strong>{" "}
+                      {PAYMENT_METHODS.find((p) => p.value === selectedTier.paymentMethod)?.label}
+                    </div>
+                    {selectedTier.installmentPlanId && (
+                      <div>
+                        <strong className="text-slate-900">Plan:</strong>{" "}
+                        {planNameById.get(selectedTier.installmentPlanId) ?? "—"}
+                      </div>
+                    )}
+                    {selectedTier.finalPriceCents != null && (
+                      <div>
+                        <strong className="text-slate-900">Final price:</strong>{" "}
+                        {formatCents(selectedTier.finalPriceCents, "EUR")}
+                      </div>
+                    )}
+                    {selectedTier.advanceMinCents != null && (
+                      <div>
+                        <strong className="text-slate-900">Advance window:</strong>{" "}
+                        {formatCents(selectedTier.advanceMinCents, "EUR")}
+                        {" → "}
+                        {selectedTier.advanceMaxCents != null
+                          ? formatCents(selectedTier.advanceMaxCents, "EUR")
+                          : "no max"}
+                      </div>
+                    )}
+                    {(selectedTier.agentBp != null ||
+                      selectedTier.managerBp != null) && (
+                      <div>
+                        <strong className="text-slate-900">Commissions:</strong>{" "}
+                        agent {(selectedTier.agentBp ?? selectedVersion?.agentBp ?? 0) / 100}%
+                        {" · "}
+                        manager {(selectedTier.managerBp ?? selectedVersion?.managerBp ?? 0) / 100}%
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="Payment method" required>
+                <Select
+                  value={paymentMethod}
+                  onChange={(e) => {
+                    const m = e.target.value as ContractPaymentMethod;
+                    setPaymentMethod(m);
+                    if (m === "ONE_TIME") {
+                      setInstallmentPlanId("");
+                      setAdvanceEuro("");
+                    }
+                    if (m === "FULL_INSTALLMENTS") setAdvanceEuro("");
+                  }}
+                >
+                  {PAYMENT_METHODS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-slate-500 mt-1">
+                  {PAYMENT_METHODS.find((p) => p.value === paymentMethod)?.help}
                 </p>
+              </Field>
+
+              {paymentMethod !== "ONE_TIME" && (
+                <Field label="Installment plan" required>
+                  <Select
+                    value={installmentPlanId}
+                    onChange={(e) => setInstallmentPlanId(e.target.value)}
+                    required
+                  >
+                    <option value="">— Select plan —</option>
+                    {activePlans.map((p) => (
+                      <option key={p._id} value={p._id}>
+                        {p.name} · {p.months} months ·{" "}
+                        {p.surchargeBp > 0
+                          ? `${p.surchargeBp / 100}% surcharge`
+                          : "no surcharge"}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
               )}
-            </Field>
+            </>
           )}
 
           {paymentMethod === "ADVANCE_INSTALLMENTS" && (
