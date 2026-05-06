@@ -10,7 +10,7 @@ import { Input } from "../components/ui/Input";
 import { Table, THead, TBody, Tr, Th, Td } from "../components/ui/Table";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDate } from "../lib/format";
-import type { Customer } from "../lib/api-types";
+import type { Customer, User } from "../lib/api-types";
 
 export function Customers() {
   const [search, setSearch] = useState("");
@@ -19,6 +19,22 @@ export function Customers() {
     queryFn: async () =>
       (await api.get("/customers", { params: search ? { search } : {} })).data,
   });
+
+  // Per Review 1.5 (2026-05-04): table needs Current Agent + Current AM
+  // columns. We resolve names from `/users` (cached) — manager is the AGENT's
+  // own `managerId`. Admins/AMs always see this; agents see their own row.
+  const { data: users = [] } = useQuery<User[]>({
+    queryKey: ["users"],
+    queryFn: async () => (await api.get("/users")).data,
+  });
+  const userById = new Map(users.map((u) => [u._id, u]));
+
+  const agentForCustomer = (c: Customer): User | undefined =>
+    c.assignedAgentId ? userById.get(c.assignedAgentId) : undefined;
+  const managerForCustomer = (c: Customer): User | undefined => {
+    const a = agentForCustomer(c);
+    return a?.managerId ? userById.get(a.managerId) : undefined;
+  };
 
   return (
     <div className="space-y-6">
@@ -63,28 +79,61 @@ export function Customers() {
           <Table>
             <THead>
               <Th>Name</Th>
-              <Th>Fiscal code</Th>
-              <Th>Email</Th>
+              <Th>Surname</Th>
+              <Th>City</Th>
+              <Th>Current Agent</Th>
+              <Th>Current Area Manager</Th>
               <Th>Created</Th>
             </THead>
             <TBody>
-              {data.map((c) => (
-                <Tr key={c._id}>
-                  <Td>
-                    <Link
-                      to={`/customers/${c._id}`}
-                      className="font-medium text-brand-600 hover:text-brand-700"
-                    >
-                      {c.fullName}
-                    </Link>
-                  </Td>
-                  <Td>
-                    <code className="text-xs font-mono text-slate-600">{c.fiscalCode}</code>
-                  </Td>
-                  <Td>{c.email || <span className="text-slate-400">—</span>}</Td>
-                  <Td className="text-slate-500">{formatDate(c.createdAt)}</Td>
-                </Tr>
-              ))}
+              {data.map((c) => {
+                const agent = agentForCustomer(c);
+                const manager = managerForCustomer(c);
+                // For legacy records that only have `fullName`, split on the
+                // last whitespace so the Surname column isn't empty.
+                let firstName = c.firstName ?? "";
+                let surname = c.surname ?? "";
+                if (!firstName && !surname && c.fullName) {
+                  const parts = c.fullName.trim().split(/\s+/);
+                  if (parts.length > 1) {
+                    surname = parts[parts.length - 1]!;
+                    firstName = parts.slice(0, -1).join(" ");
+                  } else {
+                    firstName = c.fullName;
+                  }
+                }
+                return (
+                  <Tr key={c._id}>
+                    <Td>
+                      <Link
+                        to={`/customers/${c._id}`}
+                        className="font-medium text-brand-600 hover:text-brand-700"
+                      >
+                        {firstName || c.fullName}
+                      </Link>
+                    </Td>
+                    <Td>{surname || <span className="text-slate-400">—</span>}</Td>
+                    <Td>
+                      {c.address?.city || <span className="text-slate-400">—</span>}
+                    </Td>
+                    <Td>
+                      {agent ? (
+                        agent.fullName
+                      ) : (
+                        <span className="text-slate-400">unassigned</span>
+                      )}
+                    </Td>
+                    <Td>
+                      {manager ? (
+                        manager.fullName
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </Td>
+                    <Td className="text-slate-500">{formatDate(c.createdAt)}</Td>
+                  </Tr>
+                );
+              })}
             </TBody>
           </Table>
         )}

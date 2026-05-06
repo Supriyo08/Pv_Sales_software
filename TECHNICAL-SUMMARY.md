@@ -1156,3 +1156,158 @@ sprint** so nothing slips. Backend tests still 97/97; frontend build clean.
 - `frontend/src/pages/ContractNew.tsx` — version filter excludes
   expired/future windows.
 - `frontend/src/pages/SolutionDetail.tsx` — default `validFrom = today`.
+
+---
+
+# v1.6 Brief — Review 1.5 (2026-05-04)
+
+Source: `Review 1.5 – SolarNetwork – Dev. Supriyo – Recr. Uju.pdf`. This
+review is the largest yet — a workflow re-architecture (new contract state
+machine) plus a substantially expanded customer schema and a removal of the
+standalone "installment plans" admin in favour of the per-version pricing
+matrix. Same split as before: **shipped this round** vs **queued for the
+v1.6 sprint** so nothing slips. Backend tests remain 97/97; frontend builds
+clean (1.37 MB / 401 KB gzip).
+
+## Shipped now
+
+- **Customer schema expanded per Review 1.5** — `firstName`, `surname`,
+  `birthDate`, `pecEmail`, `cellphone`, `idNumber`, `idExpireDate`, plus the
+  existing `fullName`/`email`/`phone`/`address`/`fiscalCode`. `fullName` is
+  auto-derived from firstName + surname for back-compat with v1.x search
+  indexes; create requires either `fullName` OR `(firstName && surname)`.
+- **Fiscal code is now optional** at create time (per spec). When provided,
+  validated server-side as a syntactically-correct Italian *codice fiscale*
+  (16 chars + checksum) via `backend/src/lib/italianFiscalCode.ts`. The
+  unique index becomes a partial unique on non-empty values, so multiple
+  customers without a code can coexist.
+- **PEC email + cellphone validated** at the controller layer (zod refinement).
+- **Customer notes chat** — new `CustomerNote` collection
+  (`{customerId, authorId, body, createdAt}`), endpoints
+  `GET/POST /v1/customers/:id/notes`, plus a `CustomerNotes` component on
+  `CustomerDetail` with avatar + timestamp + 30 s polling for collaborative
+  use. Anyone visible to the customer can post and read.
+- **Customers list table** — columns now mirror the spec: Name, Surname,
+  City, Current Agent, Current Area Manager, Created Date. Legacy records
+  with only `fullName` get split on the last whitespace so the Surname column
+  isn't empty.
+
+## Queued for v1.6 sprint
+
+### Contract state machine
+The current 3-state enum (`DRAFT|SIGNED|CANCELLED`) needs to become the
+Review 1.5 lifecycle:
+`DRAFT → READY_TO_GENERATE → GENERATED → APPROVED → WAITING_SIGNING →
+SIGNED → TECHNICAL_SURVEY_OK → ADMINISTRATIVE_CHECK_OK →
+PRE_INSTALLATION → INSTALLATION_PLANNED`, with branch states
+`NEEDS_INTEGRATION` and `NOT_DOABLE` that close or fork the contract.
+Each transition needs role-gated endpoints + audit-log entries + history
+timeline rows.
+
+### "New contract" UX redesign
+- Agent only picks a **Customer** at create time (no solution/version yet).
+- Contract page shows **four section cards**: Solution, Payment plan, User
+  details, House details. Each opens an inline editor that fills the data.
+- Top-right **"Generate Contract"** button — disabled until all four
+  sections are complete (PEC may still be missing). Tooltip: "To generate,
+  fulfill all required data."
+- Generate flow: pick template (filtered by solution + plan; admin can
+  define a "custom" template per-contract) → popup for advance / start
+  date → preview → submit. After submit, all four sections **lock**;
+  attempting to edit shows a confirmation "this will delete the contract
+  generation and you will have to restart from scratch."
+
+### House details (NEW collection)
+- `House` model: `customerId`, `address {road, city, postalCode, province}`,
+  `catastalDetails {sheet, particel, sub, reference}`, `documents[]`,
+  `photos[]`. **Multiple houses per customer** supported.
+- `Contract.houseId` field links the contract to a specific house.
+- `/admin/customer-form` schema config extended to govern house fields too.
+
+### Templates ↔ solution / plan binding
+- Templates assign to **a full solution** OR **a specific payment plan**
+  (per row in the pricing matrix). Generate flow shows only relevant
+  templates.
+- Admin can create a **custom template** scoped to one contract; admin
+  toggles whether the agent may pick it instead of the pre-assigned ones.
+
+### Admin approval flow refinements
+- Approval view shows preset-vs-custom badge + before/after diff of any
+  modified fields.
+- After approval, the "Generate Contract" button splits into **"Print
+  Contract"** + **"Re-generate Contract"** (with re-approval warning).
+- After printing, "Print Contract" → **"Upload Signed Contract"**.
+
+### Payment flow (already two-stage; refinements)
+- `Payment to Request` panel on the contract after signed-scan upload —
+  agent picks "advance" or "wait until installation".
+- AM and Admin can each authorize **partial** amounts (today both are
+  full-or-nothing).
+
+### Technical survey + administrative check (NEW)
+- Each runs after payment authorisation, with three outcomes per check:
+  `ALL_OK`, `NEEDS_INTEGRATION`, `NOT_DOABLE`.
+- Both OK → contract advances to pre-installation requirements.
+- `NEEDS_INTEGRATION` → admin popup: integration amount (separate from
+  base price + outside the installment plan), internal notes, integration
+  contract upload. Agent accepts (uploads signed integration) or rejects
+  (contract closes).
+- `NOT_DOABLE` → contract closes.
+
+### Pre-installation requirements
+- `Contract.pecGate`: PEC email must be filled (server-side check at the
+  state transition).
+- `Contract.cambialeDocumentId`: agent uploads the *cambiale* (guarantee)
+  whenever any installment payment method is selected. Required before the
+  install-planning state.
+
+### Installation planning section
+- Dedicated `/admin/installations/plan` view (or merged with approvals).
+- Per-contract scheduling, calendar overlay.
+
+### Solutions & installment plans (removal + matrix)
+- Drop the `/admin/installment-plans` admin page. All plan logic moves
+  inside the per-version pricing matrix.
+- Matrix row stores **Advance Min, Advance Max, Final Price proportionally
+  relative to Base Price**. New-version creation prompts the admin to apply
+  proportional updates; declining shows a warning that values may diverge.
+- **Agent + AM commission percentages remain fixed across version changes**
+  (per spec — fix to current behaviour where they get re-snapshotted).
+
+### Admin user creation gate
+- New User fields: `companyContractDocumentId`, `companyContractSignedAt`,
+  `companyContractNotes`.
+- A user's portal is **read-only** (or login-blocked) until the company's
+  contract with them is uploaded.
+
+### Admin inward payments
+- New `/admin/inward-payments` view: lists every installment derived from
+  signed contracts. Columns: Contract, Client Name, Agent, Due Date,
+  Installment number (e.g. 10/36), Status. Mark as received / overdue.
+
+### Notification areas
+- Agent: "Payment to request" + "Documents requested" (cambiale, PEC,
+  signed contract, integration) — tagged.
+- AM: "Payments to approve" + "Contracts requiring attention".
+- Admin: contracts to approve, payments to authorize, documents to
+  upload/request, technical survey + admin checks to plan, installations to
+  plan.
+- Each section becomes its own tab / chip in the existing
+  `NotificationsBell` dropdown + sidebar Approvals area.
+
+## Files touched this round
+
+- `backend/src/lib/italianFiscalCode.ts` — NEW.
+- `backend/src/modules/customers/customer.model.ts` — extended schema +
+  partial-unique index on fiscalCode.
+- `backend/src/modules/customers/customer-note.model.ts` — NEW.
+- `backend/src/modules/customers/customer.service.ts` — `deriveFullName`
+  helper, optional fiscal code path.
+- `backend/src/modules/customers/customer.controller.ts` — zod schema
+  matches the new shape; `listNotes` + `createNote` endpoints.
+- `backend/src/modules/customers/customer.routes.ts` — `/notes` routes.
+- `frontend/src/lib/api-types.ts` — `Customer` extended; `CustomerNote`.
+- `frontend/src/components/CustomerNotes.tsx` — NEW.
+- `frontend/src/pages/CustomerDetail.tsx` — slot the notes panel.
+- `frontend/src/pages/CustomerNew.tsx` — built-in keys list updated.
+- `frontend/src/pages/Customers.tsx` — Review 1.5 columns.

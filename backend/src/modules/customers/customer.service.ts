@@ -5,15 +5,37 @@ import { HttpError } from "../../middleware/error";
 import type { Scope } from "../../lib/scope";
 import { customerScopeMatch } from "../../lib/scope";
 
+// Per Review 1.5 (2026-05-04): expanded customer schema — split name/surname,
+// birth date, PEC, ID card details, etc. Fiscal code is now optional.
 type CreateInput = {
-  fiscalCode: string;
-  fullName: string;
+  fiscalCode?: string;
+  fullName?: string;
+  firstName?: string;
+  surname?: string;
+  birthDate?: Date | null;
   email?: string;
+  pecEmail?: string;
   phone?: string;
+  cellphone?: string;
+  idNumber?: string;
+  idExpireDate?: Date | null;
   address?: Record<string, string>;
   customFields?: Record<string, unknown>;
   assignedAgentId?: string | null;
 };
+
+/**
+ * If the caller gave us firstName + surname (Review 1.5 preferred shape),
+ * synthesise a `fullName` for back-compat with search indexes and v1.x
+ * contracts that already reference fullName.
+ */
+function deriveFullName(input: Partial<CreateInput>): string | undefined {
+  if (input.fullName?.trim()) return input.fullName.trim();
+  const fn = input.firstName?.trim() ?? "";
+  const sn = input.surname?.trim() ?? "";
+  if (fn || sn) return `${fn} ${sn}`.trim();
+  return undefined;
+}
 
 export async function list(
   query: { search?: string },
@@ -25,7 +47,13 @@ export async function list(
   };
   if (query.search) {
     const re = new RegExp(query.search, "i");
-    filter.$or = [{ fullName: re }, { email: re }, { fiscalCode: re }];
+    filter.$or = [
+      { fullName: re },
+      { firstName: re },
+      { surname: re },
+      { email: re },
+      { fiscalCode: re },
+    ];
   }
   return Customer.find(filter).sort({ createdAt: -1 }).limit(100);
 }
@@ -42,8 +70,20 @@ export async function getById(id: string, scope: Scope) {
 }
 
 export async function create(input: CreateInput, scope: Scope) {
-  const exists = await Customer.findOne({ fiscalCode: input.fiscalCode.toUpperCase() });
-  if (exists) throw new HttpError(409, "Customer with this fiscal code already exists");
+  const fullName = deriveFullName(input);
+  if (!fullName) {
+    throw new HttpError(
+      400,
+      "Provide fullName, or both firstName and surname (Review 1.5)"
+    );
+  }
+  const fiscalCode = input.fiscalCode?.toUpperCase().trim() ?? "";
+  if (fiscalCode) {
+    const exists = await Customer.findOne({ fiscalCode });
+    if (exists) {
+      throw new HttpError(409, "Customer with this fiscal code already exists");
+    }
+  }
   // Default ownership: agents own what they create; managers/admins can leave null or assign explicitly.
   const assignedAgentId =
     input.assignedAgentId !== undefined
@@ -53,6 +93,8 @@ export async function create(input: CreateInput, scope: Scope) {
         : scope.selfId; // AGENT or AREA_MANAGER becomes the owner
   return Customer.create({
     ...input,
+    fullName,
+    fiscalCode,
     assignedAgentId,
   });
 }
@@ -61,7 +103,11 @@ export async function update(id: string, input: Partial<CreateInput>, scope: Sco
   // Verify the user can see the customer in the first place.
   await getById(id, scope);
   const updates: Record<string, unknown> = { ...input };
-  if (input.fiscalCode) updates.fiscalCode = input.fiscalCode.toUpperCase();
+  if (input.fiscalCode !== undefined) {
+    updates.fiscalCode = input.fiscalCode ? input.fiscalCode.toUpperCase().trim() : "";
+  }
+  const derived = deriveFullName(input);
+  if (derived) updates.fullName = derived;
   // Don't allow non-admin to change ownership via plain update — use /assign instead.
   if (!scope.isAdmin) delete updates.assignedAgentId;
   const updated = await Customer.findOneAndUpdate(

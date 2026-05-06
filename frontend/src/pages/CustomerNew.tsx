@@ -8,7 +8,21 @@ import { Button } from "../components/ui/Button";
 import { Field, Input, Select, Textarea } from "../components/ui/Input";
 import type { CustomerFormConfig, CustomerFormField } from "../lib/api-types";
 
-const BUILTIN_KEYS = new Set(["fiscalCode", "fullName", "email", "phone"]);
+// Per Review 1.5 (2026-05-04): expanded built-in customer fields. Anything
+// else lives in `customFields` and is admin-configurable.
+const BUILTIN_KEYS = new Set([
+  "fiscalCode",
+  "fullName",
+  "firstName",
+  "surname",
+  "birthDate",
+  "email",
+  "pecEmail",
+  "phone",
+  "cellphone",
+  "idNumber",
+  "idExpireDate",
+]);
 
 export function CustomerNew() {
   const navigate = useNavigate();

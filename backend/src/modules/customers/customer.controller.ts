@@ -5,6 +5,8 @@ import * as customerService from "./customer.service";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
 import { buildScope } from "../../lib/scope";
+import { isValidItalianFiscalCode } from "../../lib/italianFiscalCode";
+import { CustomerNote } from "./customer-note.model";
 
 const objectId = z
   .string()
@@ -21,17 +23,43 @@ const addressSchema = z
   })
   .partial();
 
-const createSchema = z.object({
-  fiscalCode: z.string().min(3),
-  fullName: z.string().min(1),
-  email: z.string().email().or(z.literal("")).optional(),
-  phone: z.string().optional(),
-  address: addressSchema.optional(),
-  customFields: z.record(z.string(), z.unknown()).optional(),
-  assignedAgentId: objectId.nullish(),
-});
+// Per Review 1.5 (2026-05-04): the only mandatory fields at create time are
+// `fullName` (or its split firstName/surname). Fiscal code is optional but,
+// when provided, must be a valid Italian codice fiscale. PEC is optional at
+// create — gated mandatory before installation planning (enforced at the
+// install step, not here). Phone numbers accept international or IT national
+// formats; we keep the regex permissive to avoid false rejections of legacy
+// data, just stripping spaces/dashes.
+const phoneRegex = /^[+]?[0-9 .\-/]{6,20}$/;
 
-const updateSchema = createSchema.partial();
+const createSchema = z
+  .object({
+    fiscalCode: z
+      .string()
+      .optional()
+      .refine((v) => isValidItalianFiscalCode(v), {
+        message: "Invalid Italian fiscal code (codice fiscale)",
+      }),
+    fullName: z.string().min(1).optional(),
+    firstName: z.string().min(1).optional(),
+    surname: z.string().min(1).optional(),
+    birthDate: z.coerce.date().optional().nullable(),
+    email: z.string().email().or(z.literal("")).optional(),
+    pecEmail: z.string().email().or(z.literal("")).optional(),
+    phone: z.string().regex(phoneRegex).or(z.literal("")).optional(),
+    cellphone: z.string().regex(phoneRegex).or(z.literal("")).optional(),
+    idNumber: z.string().optional(),
+    idExpireDate: z.coerce.date().optional().nullable(),
+    address: addressSchema.optional(),
+    customFields: z.record(z.string(), z.unknown()).optional(),
+    assignedAgentId: objectId.nullish(),
+  })
+  .refine((v) => v.fullName || (v.firstName && v.surname), {
+    message: "Provide fullName, or both firstName and surname (Review 1.5)",
+    path: ["fullName"],
+  });
+
+const updateSchema = createSchema.innerType().partial();
 
 const commissionSplitSchema = z.object({
   agentSplits: z
@@ -137,6 +165,53 @@ export const remove: RequestHandler = async (req, res, next) => {
       requestId: req.requestId,
     });
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Notes (Review 1.5: chat over customer) ────────────────────────────────
+
+const noteSchema = z.object({
+  body: z.string().min(1).max(5000),
+});
+
+export const listNotes: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const scope = await buildScope(req.user);
+    // Visibility check: caller must be able to see the customer.
+    await customerService.getById(req.params.id!, scope);
+    const notes = await CustomerNote.find({ customerId: req.params.id! })
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
+    res.json(notes);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createNote: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const scope = await buildScope(req.user);
+    await customerService.getById(req.params.id!, scope);
+    const body = noteSchema.parse(req.body);
+    const note = await CustomerNote.create({
+      customerId: req.params.id!,
+      authorId: req.user.sub,
+      body: body.body,
+    });
+    void audit.log({
+      actorId: req.user.sub,
+      action: "customer.note.create",
+      targetType: "Customer",
+      targetId: req.params.id!,
+      after: note.toObject(),
+      requestId: req.requestId,
+    });
+    res.status(201).json(note);
   } catch (err) {
     next(err);
   }

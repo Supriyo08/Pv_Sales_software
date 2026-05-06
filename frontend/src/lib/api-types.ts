@@ -22,12 +22,36 @@ export type Customer = {
   _id: string;
   fiscalCode: string;
   fullName: string;
+  // Per Review 1.5 (2026-05-04): split name, birth date, PEC, cellphone,
+  // ID card number + expiry. Fiscal code is now optional at create.
+  firstName?: string;
+  surname?: string;
+  birthDate?: string | null;
   email: string;
+  pecEmail?: string;
   phone: string;
-  address?: { line1?: string; city?: string; postalCode?: string; country?: string };
+  cellphone?: string;
+  idNumber?: string;
+  idExpireDate?: string | null;
+  address?: {
+    line1?: string;
+    line2?: string;
+    city?: string;
+    region?: string;
+    postalCode?: string;
+    country?: string;
+  };
   assignedAgentId: string | null;
   // Per Review 1.1 §6.
   commissionSplit: CommissionSplit | null;
+  createdAt: string;
+};
+
+export type CustomerNote = {
+  _id: string;
+  customerId: string;
+  authorId: string;
+  body: string;
   createdAt: string;
 };
 

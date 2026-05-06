@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, UserCog, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader, BackLink } from "../components/PageHeader";
+import { CustomerNotes } from "../components/CustomerNotes";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Field, Input, Select } from "../components/ui/Input";
@@ -447,6 +448,12 @@ export function CustomerDetail() {
             </Table>
           )}
         </Card>
+      </div>
+
+      {/* Per Review 1.5 (2026-05-04): customer chat — admin/AM/agent leave
+          notes with author + timestamp. */}
+      <div className="mt-6">
+        <CustomerNotes customerId={customer._id} />
       </div>
     </div>
   );
