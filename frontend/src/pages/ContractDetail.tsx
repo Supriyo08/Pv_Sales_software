@@ -460,6 +460,9 @@ export function ContractDetail() {
                   mimeType={generatedDoc.mimeType ?? ""}
                   baseFilename={`contract-${contract._id.slice(-8)}`}
                   printableSelector="#contract-generated-preview .docx-preview-content"
+                  // Per Review 1.5 follow-up (2026-05-07): server-side
+                  // LibreOffice conversion gives byte-perfect PDF output.
+                  serverPdfPath={`/contracts/${contract._id}/generated.pdf`}
                 />
               ) : (
                 <Badge tone="amber">Print/download locked until admin approves</Badge>

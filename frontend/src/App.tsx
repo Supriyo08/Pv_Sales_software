@@ -22,7 +22,9 @@ import { Payments } from "./pages/Payments";
 import { AuditLogs } from "./pages/AuditLogs";
 import { TemplatesAdmin } from "./pages/TemplatesAdmin";
 import { TemplateRender } from "./pages/TemplateRender";
-import { InstallmentPlansAdmin } from "./pages/InstallmentPlansAdmin";
+// Per Review 1.5 (2026-05-07): the standalone Installment Plans admin is
+// removed. Plans are defined exclusively inside each solution version's
+// pricing matrix now. Page file kept on disk for reference but not routed.
 import { PriceApprovalsAdmin } from "./pages/PriceApprovalsAdmin";
 import { PricingFormulasAdmin } from "./pages/PricingFormulasAdmin";
 import { Quote } from "./pages/Quote";
@@ -68,10 +70,8 @@ export default function App() {
               <Route path="/admin/users" element={<UsersAdmin />} />
               <Route path="/admin/users/:id" element={<UserProfile />} />
               <Route path="/admin/territories" element={<TerritoriesAdmin />} />
-              <Route
-                path="/admin/installment-plans"
-                element={<InstallmentPlansAdmin />}
-              />
+              {/* Per Review 1.5 (2026-05-07): /admin/installment-plans
+                  removed — plans live inside each version's pricing matrix. */}
               <Route path="/admin/price-approvals" element={<PriceApprovalsAdmin />} />
               <Route path="/admin/pricing-formulas" element={<PricingFormulasAdmin />} />
               <Route path="/admin/customer-form" element={<CustomerFormAdmin />} />

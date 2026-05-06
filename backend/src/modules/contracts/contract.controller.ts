@@ -1,8 +1,14 @@
 import type { RequestHandler } from "express";
+import path from "path";
 import { z } from "zod";
 import { Types } from "mongoose";
 import * as contractService from "./contract.service";
-import { CONTRACT_STATUSES, PAYMENT_METHODS } from "./contract.model";
+import { Contract, CONTRACT_STATUSES, PAYMENT_METHODS } from "./contract.model";
+import { PvDocument } from "../documents/document.model";
+import {
+  docxFileToPdfWithCache,
+  LibreOfficeUnavailableError,
+} from "../../lib/docxToPdf";
 import * as audit from "../audit/audit.service";
 import { HttpError } from "../../middleware/error";
 import { buildScope } from "../../lib/scope";
@@ -184,6 +190,77 @@ export const approveGenerated: RequestHandler = async (req, res, next) => {
       requestId: req.requestId,
     });
     res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Per Review 1.5 follow-up (2026-05-07): the agent's "Download PDF" button
+ * on a generated Word contract used to capture the docx-preview DOM with
+ * html2canvas — losing fonts, tables, headers, footers. We instead convert
+ * the original .docx to PDF via headless LibreOffice (`soffice`) so the
+ * output is byte-identical to what Word produces. Cached on disk per
+ * (path + size + mtime) so repeated downloads don't re-convert.
+ *
+ * If LibreOffice isn't installed on the host, returns 503 with
+ * `code: "LIBREOFFICE_UNAVAILABLE"` — the frontend then falls back to its
+ * client-side rasterised PDF.
+ */
+export const downloadGeneratedPdf: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const scope = await buildScope(req.user);
+    const contract = await Contract.findById(req.params.id!);
+    if (!contract) throw new HttpError(404, "Contract not found");
+    if (!scope.isAdmin) {
+      const visible =
+        scope.agentIds.includes(contract.agentId.toString()) ||
+        (contract.managerId && contract.managerId.toString() === scope.selfId);
+      if (!visible) throw new HttpError(404, "Contract not found");
+    }
+    if (!contract.generatedDocumentId) {
+      throw new HttpError(
+        400,
+        "No generated contract document to convert — generate the contract first."
+      );
+    }
+    const doc = await PvDocument.findById(contract.generatedDocumentId);
+    if (!doc) throw new HttpError(404, "Generated document not found");
+
+    const isDocx =
+      (doc.mimeType ?? "").includes("wordprocessingml") ||
+      doc.url.toLowerCase().endsWith(".docx");
+    if (!isDocx) {
+      // Already a PDF — just redirect to the static URL.
+      res.redirect(doc.url);
+      return;
+    }
+
+    const absPath = path.resolve(
+      process.cwd(),
+      doc.url.replace(/^\/uploads\//, "uploads/")
+    );
+
+    try {
+      const pdfBuffer = await docxFileToPdfWithCache(absPath);
+      const filename = `contract-${contract._id.toString().slice(-8)}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+      res.send(pdfBuffer);
+    } catch (err) {
+      if (err instanceof LibreOfficeUnavailableError) {
+        res.status(503).json({
+          error: err.message,
+          code: "LIBREOFFICE_UNAVAILABLE",
+        });
+        return;
+      }
+      throw err;
+    }
   } catch (err) {
     next(err);
   }

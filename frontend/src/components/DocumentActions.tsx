@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Printer, Download, FileText } from "lucide-react";
 import { Button } from "./ui/Button";
+import { api } from "../lib/api";
 
 type Props = {
   /** URL of the source file (.docx or .pdf). */
@@ -15,6 +16,14 @@ type Props = {
    * view rather than launching Word.
    */
   printableSelector?: string;
+  /**
+   * Optional API path that returns a server-converted PDF (LibreOffice
+   * headless), e.g. `/contracts/:id/generated.pdf`. When set, "Download PDF"
+   * tries this FIRST so the output is byte-identical to the .docx. If the
+   * endpoint returns 503 (LibreOffice not installed) we transparently fall
+   * back to the client-side rasterised PDF.
+   */
+  serverPdfPath?: string;
 };
 
 const DOCX_MIME =
@@ -39,6 +48,7 @@ export function DocumentActions({
   mimeType,
   baseFilename = "contract",
   printableSelector,
+  serverPdfPath,
 }: Props) {
   const isDocx = mimeType === DOCX_MIME || src.toLowerCase().endsWith(".docx");
   const isPdf = mimeType === "application/pdf" || src.toLowerCase().endsWith(".pdf");
@@ -67,6 +77,44 @@ export function DocumentActions({
         triggerDownload(src, `${baseFilename}.pdf`);
         return;
       }
+
+      // Per Review 1.5 follow-up (2026-05-07): for .docx contracts, prefer
+      // the server-side LibreOffice conversion — it produces a byte-perfect
+      // PDF that mirrors Word output exactly. If the backend is missing
+      // soffice (503 + LIBREOFFICE_UNAVAILABLE), fall back to the
+      // client-side rasterised PDF below.
+      if (isDocx && serverPdfPath) {
+        try {
+          const res = await api.get(serverPdfPath, { responseType: "blob" });
+          const blob = res.data as Blob;
+          const url = URL.createObjectURL(blob);
+          try {
+            triggerDownload(url, `${baseFilename}.pdf`);
+          } finally {
+            // Defer revocation a tick so the download starts.
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }
+          return;
+        } catch (err) {
+          const status = (err as { response?: { status?: number } })?.response
+            ?.status;
+          if (status !== 503) {
+            // Unexpected error — surface and bail (user can retry).
+            window.alert(
+              `Server-side PDF conversion failed: ${
+                (err as Error).message ?? "unknown error"
+              }`
+            );
+            return;
+          }
+          // 503 → LibreOffice unavailable on host, fall through to
+          // client-side rasterised PDF (less faithful but always works).
+          console.warn(
+            "Server-side LibreOffice conversion unavailable — using client-side rasterised PDF."
+          );
+        }
+      }
+
       const node = printableSelector
         ? (document.querySelector(printableSelector) as HTMLElement | null)
         : null;

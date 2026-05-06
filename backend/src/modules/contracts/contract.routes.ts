@@ -25,6 +25,12 @@ router.post(
   ctrl.approveGenerated
 );
 
+// Per Review 1.5 follow-up (2026-05-07): byte-perfect PDF download — converts
+// the generated .docx to PDF on the server using headless LibreOffice. Falls
+// back gracefully (503 + LIBREOFFICE_UNAVAILABLE code) if soffice isn't on
+// the host, so the frontend can switch to its rasterised PDF.
+router.get("/:id/generated.pdf", ctrl.downloadGeneratedPdf);
+
 // Per Review 1.1 §1: agent (or admin) submits an edit request; admin/AM applies it.
 router.post("/:id/edit-requests", editRequestCtrl.create);
 

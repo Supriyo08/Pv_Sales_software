@@ -20,7 +20,6 @@ import {
   History,
   Wallet,
   FileText,
-  Calendar,
   ShieldAlert,
   Calculator,
   PencilLine,
@@ -150,12 +149,8 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/admin", label: "Bonuses", icon: Shield, roles: ["ADMIN"] },
       { to: "/admin/payments", label: "Payments", icon: Wallet, roles: ["ADMIN"] },
-      {
-        to: "/admin/installment-plans",
-        label: "Installment plans",
-        icon: Calendar,
-        roles: ["ADMIN"],
-      },
+      // Per Review 1.5 (2026-05-07): standalone Installment plans admin
+      // removed — plans now live inside each version's pricing matrix.
       {
         to: "/admin/pricing-formulas",
         label: "Pricing formulas",
