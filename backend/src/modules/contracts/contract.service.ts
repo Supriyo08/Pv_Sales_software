@@ -479,10 +479,15 @@ export async function generate(id: string, input: GenerateInput) {
   const dir = path.join(UPLOAD_ROOT, "Contract");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Per follow-up to Review 1.1 (2026-05-02): if the template was uploaded as a
-  // .docx, generate a .docx that mirrors the original Word formatting exactly.
-  // Otherwise (TipTap-authored or plain HTML upload), fall back to the PDF
-  // pipeline introduced in v1.1.
+  // Per follow-up to Review 1.1 (2026-05-02) + Review 1.3 (2026-05-04):
+  // .docx-uploaded templates round-trip the original Word file. TipTap /
+  // .html-uploaded templates fall through to the PDF pipeline.
+  //
+  // Critical: capture whether the template was originally Word BEFORE
+  // `readSourceDocx` self-heals a missing `sourceDocxPath`. If yes-but-now-
+  // missing, refuse to silently produce a PDF — that's exactly how a "Word
+  // contract turned into an HTML/text-styled PDF for no reason" happens.
+  const wasDocxTemplate = !!template.sourceDocxPath;
   const sourceDocx = await templateService.readSourceDocx(template);
   let bytes: Buffer | Uint8Array;
   let mimeType: string;
@@ -493,6 +498,15 @@ export async function generate(id: string, input: GenerateInput) {
     mimeType =
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     extension = "docx";
+  } else if (wasDocxTemplate) {
+    // The template was uploaded as Word but the source file is gone from
+    // disk. Don't silently degrade to a PDF rendered from the HTML mammoth
+    // body — that produces a visually-different "html-looking" output that
+    // confuses agents and customers. Force the admin to re-upload.
+    throw new HttpError(
+      409,
+      "This template's source .docx is missing on disk (likely lost after a backend restart or deploy). Re-upload the .docx via the templates admin page before generating again."
+    );
   } else {
     const text = templateService.render(
       template.body,

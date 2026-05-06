@@ -564,14 +564,42 @@ export function renderDocx(
   });
 }
 
+/**
+ * Per Review 1.3 follow-up (2026-05-04): when a template advertises a
+ * `sourceDocxPath` but the file has vanished from disk (cleanup, restart with
+ * fresh `uploads/`, deploy that didn't migrate files, manual purge), DON'T
+ * silently fall back to the HTML-body PDF pipeline. That's how a "Word
+ * contract becomes an HTML / text-styled PDF in the database for no reason".
+ *
+ * If the file is missing AND we have a template _id, self-heal the DB by
+ * unsetting `sourceDocxPath` so every code path sees the same truth (admin UI,
+ * generation, list response). Log a warning so it surfaces in observability.
+ */
 export async function readSourceDocx(template: {
+  _id?: unknown;
   sourceDocxPath?: string | null;
 }): Promise<Buffer | null> {
   if (!template.sourceDocxPath) return null;
-  // Strip the leading "/uploads/" so we resolve under UPLOAD_ROOT.
   const relativePath = template.sourceDocxPath.replace(/^\/uploads\//, "");
   const fullPath = path.join(UPLOAD_ROOT, relativePath);
-  if (!fs.existsSync(fullPath)) return null;
+  if (!fs.existsSync(fullPath)) {
+    if (template._id) {
+      try {
+        await ContractTemplate.updateOne(
+          { _id: template._id as string },
+          { $unset: { sourceDocxPath: 1 } }
+        );
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[template] sourceDocxPath ${template.sourceDocxPath} missing on disk — cleared on template ${String(template._id)}`
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[template] failed to self-heal sourceDocxPath:", err);
+      }
+    }
+    return null;
+  }
   return fs.readFileSync(fullPath);
 }
 
