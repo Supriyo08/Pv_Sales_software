@@ -1,6 +1,32 @@
 import { Schema, model, type InferSchemaType, type Model } from "mongoose";
 
-export const CONTRACT_STATUSES = ["DRAFT", "SIGNED", "CANCELLED"] as const;
+// Per Review 1.5 (2026-05-07): the contract lifecycle has many more stages
+// than v1.0's three. Old codepaths (sign/approve/cancel) keep working because
+// DRAFT / SIGNED / CANCELLED remain valid values; the additional stages are
+// inserted between them or follow SIGNED.
+//
+//   DRAFT → READY_TO_GENERATE (4 fulfilment sections complete, agent has not
+//                              clicked Generate yet)
+//         → GENERATED          (agent generated, awaiting admin approval)
+//         → APPROVED           (admin approved generation; agent can print)
+//         → WAITING_SIGNING    (agent printed; awaiting signed scan)
+//         → SIGNED             (signed scan uploaded, admin re-approves)
+//         → TECHNICAL_SURVEY_OK (admin marked tech survey OK)
+//         → ADMIN_CHECK_OK     (admin marked bureaucratic check OK)
+//         → INSTALLATION_PLANNED (final stage)
+//   any → CANCELLED            (terminal; reason mandatory)
+export const CONTRACT_STATUSES = [
+  "DRAFT",
+  "READY_TO_GENERATE",
+  "GENERATED",
+  "APPROVED",
+  "WAITING_SIGNING",
+  "SIGNED",
+  "TECHNICAL_SURVEY_OK",
+  "ADMIN_CHECK_OK",
+  "INSTALLATION_PLANNED",
+  "CANCELLED",
+] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
 
 export const PAYMENT_METHODS = [
@@ -9,6 +35,16 @@ export const PAYMENT_METHODS = [
   "FULL_INSTALLMENTS",
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+// Per Review 1.5: technical survey + bureaucratic check, each with three
+// possible outcomes. PENDING means not yet decided.
+export const CHECK_OUTCOMES = [
+  "PENDING",
+  "OK",
+  "INTEGRATION_NEEDED",
+  "NOT_DOABLE",
+] as const;
+export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 
 const contractSchema = new Schema(
   {
@@ -57,6 +93,74 @@ const contractSchema = new Schema(
     generatedFromTemplateId: { type: Schema.Types.ObjectId, ref: "ContractTemplate", default: null },
     generationApprovedAt: { type: Date, default: null },
     generationApprovedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+
+    // Per Review 1.5 (2026-05-07): the spec adds an explicit "agent printed
+    // the contract" milestone between APPROVED and SIGNED so the UI can swap
+    // the "Print" button for "Upload signed contract".
+    printedAt: { type: Date, default: null },
+
+    // Per Review 1.5: agent picks the contract date + first-installment start
+    // date when launching the Generate flow. Stored alongside the contract so
+    // the generated PDF can render them and the admin payment panel can
+    // schedule installments off them.
+    contractStartDate: { type: Date, default: null },
+    installmentStartDate: { type: Date, default: null },
+
+    // Per Review 1.5: house this contract is tied to. Nullable because not
+    // all contracts have a fulfilled house at generate time (agent fulfils
+    // 4 sections progressively).
+    houseId: { type: Schema.Types.ObjectId, ref: "House", default: null, index: true },
+
+    // Per Review 1.5: technical survey + administrative bureaucratic check,
+    // both planned and decided by admin after signing. Outcomes drive the
+    // pre-installation flow (OK → installation; INTEGRATION_NEEDED → revised
+    // doc to agent; NOT_DOABLE → contract closed).
+    technicalSurvey: {
+      outcome: {
+        type: String,
+        enum: CHECK_OUTCOMES,
+        default: "PENDING",
+      },
+      plannedAt: { type: Date, default: null },
+      decidedAt: { type: Date, default: null },
+      decidedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+      notes: { type: String, default: "" },
+    },
+    administrativeCheck: {
+      outcome: {
+        type: String,
+        enum: CHECK_OUTCOMES,
+        default: "PENDING",
+      },
+      plannedAt: { type: Date, default: null },
+      decidedAt: { type: Date, default: null },
+      decidedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+      notes: { type: String, default: "" },
+    },
+
+    // Per Review 1.5: when an outcome is INTEGRATION_NEEDED, admin sets a
+    // separate integration price. NOT summed into amountCents because it
+    // may need to be paid in advance and not follow the installment plan.
+    integrationAmountCents: { type: Number, default: 0, min: 0 },
+    integrationDocumentId: {
+      type: Schema.Types.ObjectId,
+      ref: "Document",
+      default: null,
+    },
+    integrationAcceptedAt: { type: Date, default: null },
+    integrationDeclinedAt: { type: Date, default: null },
+
+    // Per Review 1.5: pre-installation requirement. The cambiale (Italian
+    // promissory note / guarantee) is required when ANY form of installments
+    // is involved before installation can be planned.
+    cambialeDocumentId: {
+      type: Schema.Types.ObjectId,
+      ref: "Document",
+      default: null,
+    },
+
+    // Per Review 1.5: installation milestones planned by admin.
+    installationPlannedFor: { type: Date, default: null },
   },
   { timestamps: true }
 );

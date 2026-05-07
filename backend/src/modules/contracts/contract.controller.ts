@@ -266,6 +266,182 @@ export const downloadGeneratedPdf: RequestHandler = async (req, res, next) => {
   }
 };
 
+// ─── Per Review 1.5 (2026-05-07): post-sign lifecycle endpoints ──────────
+
+const checkSchema = z.object({
+  outcome: z.enum(["OK", "INTEGRATION_NEEDED", "NOT_DOABLE"]),
+  notes: z.string().max(2000).optional(),
+});
+
+const integrationSchema = z.object({
+  amountCents: z.number().int().min(0),
+  documentId: objectId.nullish(),
+  notes: z.string().max(2000).optional(),
+});
+
+const integrationDecisionSchema = z.object({
+  decision: z.enum(["ACCEPT", "DECLINE"]),
+  signedDocumentId: objectId.optional(),
+});
+
+const cambialeSchema = z.object({ documentId: objectId });
+
+const planInstallationSchema = z.object({
+  plannedFor: z.coerce.date(),
+});
+
+export const markPrinted: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const c = await contractService.markPrinted(req.params.id!);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.printed",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const decideTechnicalSurvey: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = checkSchema.parse(req.body);
+    const c = await contractService.decideCheck(
+      req.params.id!,
+      "technical",
+      body.outcome,
+      req.user.sub,
+      body.notes ?? ""
+    );
+    void audit.log({
+      actorId: req.user.sub,
+      action: `contract.technical_survey.${body.outcome.toLowerCase()}`,
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const decideAdministrativeCheck: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = checkSchema.parse(req.body);
+    const c = await contractService.decideCheck(
+      req.params.id!,
+      "administrative",
+      body.outcome,
+      req.user.sub,
+      body.notes ?? ""
+    );
+    void audit.log({
+      actorId: req.user.sub,
+      action: `contract.administrative_check.${body.outcome.toLowerCase()}`,
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const setIntegration: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = integrationSchema.parse(req.body);
+    const c = await contractService.setIntegration(req.params.id!, {
+      amountCents: body.amountCents,
+      documentId: body.documentId ?? null,
+      notes: body.notes,
+    });
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.integration.set",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const decideIntegration: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = integrationDecisionSchema.parse(req.body);
+    const c = await contractService.decideIntegration(
+      req.params.id!,
+      body.decision,
+      body.signedDocumentId ?? null
+    );
+    void audit.log({
+      actorId: req.user.sub,
+      action: `contract.integration.${body.decision.toLowerCase()}`,
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const attachCambiale: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = cambialeSchema.parse(req.body);
+    const c = await contractService.attachCambiale(req.params.id!, body.documentId);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.cambiale.attach",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const planInstallation: RequestHandler = async (req, res, next) => {
+  try {
+    if (!req.user) throw new HttpError(401, "Unauthenticated");
+    const body = planInstallationSchema.parse(req.body);
+    const c = await contractService.planInstallation(req.params.id!, body.plannedFor);
+    void audit.log({
+      actorId: req.user.sub,
+      action: "contract.installation.plan",
+      targetType: "Contract",
+      targetId: c._id.toString(),
+      after: c.toObject(),
+      requestId: req.requestId,
+    });
+    res.json(c);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const cancel: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) throw new HttpError(401, "Unauthenticated");

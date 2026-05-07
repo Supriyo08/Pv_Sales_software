@@ -581,6 +581,171 @@ export async function cancel(id: string, reason: string) {
   return contract;
 }
 
+// ─── Per Review 1.5 (2026-05-07): post-sign lifecycle helpers ────────────
+
+/** Agent prints the approved contract — moves status to WAITING_SIGNING. */
+export async function markPrinted(id: string) {
+  const contract = await getById(id);
+  if (contract.status !== "APPROVED") {
+    throw new HttpError(
+      400,
+      `Cannot mark printed in status ${contract.status} — admin must approve the generation first`
+    );
+  }
+  contract.status = "WAITING_SIGNING";
+  contract.printedAt = new Date();
+  await contract.save();
+  return contract;
+}
+
+/**
+ * Admin records the outcome of the technical survey or the bureaucratic
+ * (administrative) check. Each can be OK / INTEGRATION_NEEDED / NOT_DOABLE.
+ * When BOTH are OK, contract advances toward installation planning.
+ * NOT_DOABLE on either auto-cancels the contract with a clear reason.
+ */
+export async function decideCheck(
+  id: string,
+  kind: "technical" | "administrative",
+  outcome: "OK" | "INTEGRATION_NEEDED" | "NOT_DOABLE",
+  deciderId: string,
+  notes: string
+) {
+  const contract = await getById(id);
+  if (contract.status === "CANCELLED") {
+    throw new HttpError(400, "Contract is cancelled");
+  }
+  const previousPlanned =
+    kind === "technical"
+      ? contract.technicalSurvey?.plannedAt ?? null
+      : contract.administrativeCheck?.plannedAt ?? null;
+  const block = {
+    outcome,
+    plannedAt: previousPlanned,
+    decidedAt: new Date(),
+    decidedBy: deciderId,
+    notes,
+  };
+  if (kind === "technical") {
+    contract.technicalSurvey = block as unknown as typeof contract.technicalSurvey;
+  } else {
+    contract.administrativeCheck = block as unknown as typeof contract.administrativeCheck;
+  }
+
+  if (outcome === "NOT_DOABLE") {
+    contract.status = "CANCELLED";
+    contract.cancelledAt = new Date();
+    contract.cancellationReason = `${kind} check NOT_DOABLE: ${notes || "no notes"}`;
+    await contract.save();
+    events.emit("contract.cancelled", { contractId: contract._id.toString() });
+    return contract;
+  }
+
+  // Both checks OK → bump status one step at a time so the timeline shows
+  // each milestone distinctly.
+  const techOk = contract.technicalSurvey?.outcome === "OK";
+  const adminOk = contract.administrativeCheck?.outcome === "OK";
+  if (kind === "technical" && outcome === "OK" && contract.status === "SIGNED") {
+    contract.status = "TECHNICAL_SURVEY_OK";
+  }
+  if (
+    kind === "administrative" &&
+    outcome === "OK" &&
+    (contract.status === "SIGNED" || contract.status === "TECHNICAL_SURVEY_OK")
+  ) {
+    contract.status = techOk ? "ADMIN_CHECK_OK" : "TECHNICAL_SURVEY_OK";
+  }
+  if (techOk && adminOk && contract.status !== "INSTALLATION_PLANNED") {
+    contract.status = "ADMIN_CHECK_OK";
+  }
+
+  await contract.save();
+  return contract;
+}
+
+/**
+ * Admin sets the integration amount + uploads an integration contract document.
+ * Stored separately from `amountCents` because per the spec it may need to be
+ * paid in advance and outside the installment plan.
+ */
+export async function setIntegration(
+  id: string,
+  input: { amountCents: number; documentId?: string | null; notes?: string }
+) {
+  const contract = await getById(id);
+  contract.integrationAmountCents = Math.max(0, Math.floor(input.amountCents));
+  contract.integrationDocumentId = (input.documentId ?? null) as unknown as
+    typeof contract.integrationDocumentId;
+  contract.integrationAcceptedAt = null;
+  contract.integrationDeclinedAt = null;
+  await contract.save();
+  return contract;
+}
+
+/** Agent accepts (or declines) the integration request. */
+export async function decideIntegration(
+  id: string,
+  decision: "ACCEPT" | "DECLINE",
+  signedDocumentId?: string | null
+) {
+  const contract = await getById(id);
+  if (decision === "ACCEPT") {
+    contract.integrationAcceptedAt = new Date();
+    if (signedDocumentId) {
+      contract.integrationDocumentId =
+        signedDocumentId as unknown as typeof contract.integrationDocumentId;
+    }
+  } else {
+    contract.integrationDeclinedAt = new Date();
+    contract.status = "CANCELLED";
+    contract.cancelledAt = new Date();
+    contract.cancellationReason = "Integration request declined by agent";
+    events.emit("contract.cancelled", { contractId: contract._id.toString() });
+  }
+  await contract.save();
+  return contract;
+}
+
+/**
+ * Agent uploads the cambiale (Italian guarantee note) — required before
+ * installation can be planned when ANY form of installments is involved.
+ */
+export async function attachCambiale(id: string, documentId: string) {
+  const contract = await getById(id);
+  contract.cambialeDocumentId =
+    documentId as unknown as typeof contract.cambialeDocumentId;
+  await contract.save();
+  return contract;
+}
+
+/** Admin schedules the installation — final lifecycle stage. */
+export async function planInstallation(id: string, plannedFor: Date) {
+  const contract = await getById(id);
+  if (
+    contract.status !== "ADMIN_CHECK_OK" &&
+    contract.status !== "TECHNICAL_SURVEY_OK"
+  ) {
+    throw new HttpError(
+      400,
+      `Cannot plan installation in status ${contract.status} — both checks must be OK first`
+    );
+  }
+  // Cambiale is required for any installment-based payment method.
+  if (
+    contract.paymentMethod !== "ONE_TIME" &&
+    !contract.cambialeDocumentId
+  ) {
+    throw new HttpError(
+      400,
+      "Cambiale (guarantee document) must be uploaded before scheduling installation for installment contracts"
+    );
+  }
+  contract.installationPlannedFor = plannedFor;
+  contract.status = "INSTALLATION_PLANNED";
+  await contract.save();
+  return contract;
+}
+
 /**
  * Per Review 1.2 (2026-05-04): a chronological history of every meaningful
  * event in a contract's lifecycle so admins, AMs and agents can scroll through

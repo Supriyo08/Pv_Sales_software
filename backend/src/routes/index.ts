@@ -21,6 +21,8 @@ import contractEditRequestRoutes from "../modules/contract-edit-requests/contrac
 import advancePayAuthRoutes from "../modules/advance-pay-authorizations/advance-pay-auth.routes";
 import reversalReviewRoutes from "../modules/reversal-reviews/reversal-review.routes";
 import customerFormRoutes from "../modules/customer-form/customer-form.routes";
+import houseRoutes from "../modules/houses/house.routes";
+import noteRoutes from "../modules/notes/note.routes";
 
 const router = Router();
 
@@ -49,5 +51,11 @@ router.use("/reversal-reviews", reversalReviewRoutes);
 // file existed since v1.1 but wasn't mounted, so /v1/customer-form returned
 // 404 and the New Customer page hung on "Loading…" forever.
 router.use("/customer-form", customerFormRoutes);
+// Per Review 1.5 (2026-05-07): houses are first-class entities (a customer
+// may have many) so the contract can pin to one and the catastal details
+// flow into generated PDFs.
+router.use("/houses", houseRoutes);
+// Per Review 1.5: chat-style notes on Customer + Contract pages.
+router.use("/notes", noteRoutes);
 
 export default router;

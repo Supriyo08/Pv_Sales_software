@@ -34,4 +34,29 @@ router.get("/:id/generated.pdf", ctrl.downloadGeneratedPdf);
 // Per Review 1.1 §1: agent (or admin) submits an edit request; admin/AM applies it.
 router.post("/:id/edit-requests", editRequestCtrl.create);
 
+// Per Review 1.5 (2026-05-07): post-sign lifecycle endpoints.
+//   - Agent prints → moves to WAITING_SIGNING.
+router.post("/:id/mark-printed", ctrl.markPrinted);
+//   - Admin records technical survey + bureaucratic check outcomes.
+router.post(
+  "/:id/technical-survey",
+  requireRole("ADMIN", "AREA_MANAGER"),
+  ctrl.decideTechnicalSurvey
+);
+router.post(
+  "/:id/administrative-check",
+  requireRole("ADMIN", "AREA_MANAGER"),
+  ctrl.decideAdministrativeCheck
+);
+//   - Integration price + document + agent decision.
+router.post("/:id/integration", requireRole("ADMIN"), ctrl.setIntegration);
+router.post("/:id/integration/decide", ctrl.decideIntegration);
+//   - Cambiale upload (agent) + final installation planning (admin).
+router.post("/:id/cambiale", ctrl.attachCambiale);
+router.post(
+  "/:id/plan-installation",
+  requireRole("ADMIN"),
+  ctrl.planInstallation
+);
+
 export default router;

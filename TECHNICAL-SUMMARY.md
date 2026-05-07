@@ -1311,3 +1311,184 @@ timeline rows.
 - `frontend/src/pages/CustomerDetail.tsx` — slot the notes panel.
 - `frontend/src/pages/CustomerNew.tsx` — built-in keys list updated.
 - `frontend/src/pages/Customers.tsx` — Review 1.5 columns.
+
+---
+
+# v1.6 Brief — Review 1.5 (2026-05-07, audit + foundations)
+
+Source: `Temp. Review 1.3 - SolarNetwork - Dev..docx` and the full text the
+client pasted on 2026-05-07. Re-read carefully against the actual codebase to
+audit what's there, what's missing, and what was shipped this round.
+
+## Shipped this round (foundations)
+
+### Backend — full contract lifecycle states
+`backend/src/modules/contracts/contract.model.ts` — `CONTRACT_STATUSES`
+extended (additively, no breaking change) to the 10 states the spec lists:
+`DRAFT → READY_TO_GENERATE → GENERATED → APPROVED → WAITING_SIGNING →
+SIGNED → TECHNICAL_SURVEY_OK → ADMIN_CHECK_OK → INSTALLATION_PLANNED → CANCELLED`.
+
+New fields on `Contract`:
+- `printedAt` (the agent printed → status moves to WAITING_SIGNING)
+- `contractStartDate`, `installmentStartDate` (set in the Generate flow)
+- `houseId` → links to the new House collection
+- `technicalSurvey`, `administrativeCheck` sub-docs (outcome / plannedAt /
+  decidedAt / decidedBy / notes), with a `CHECK_OUTCOMES` enum:
+  `PENDING / OK / INTEGRATION_NEEDED / NOT_DOABLE`
+- `integrationAmountCents`, `integrationDocumentId`,
+  `integrationAcceptedAt`, `integrationDeclinedAt` (admin's "needs price
+  integration" outcome creates a separate price track that does NOT roll
+  into `amountCents`)
+- `cambialeDocumentId` (Italian guarantee note required before installation
+  for any installment-based contract)
+- `installationPlannedFor`
+
+### Backend — service helpers + endpoints
+`backend/src/modules/contracts/contract.service.ts`:
+- `markPrinted(id)` — APPROVED → WAITING_SIGNING + sets `printedAt`.
+- `decideCheck(id, "technical"|"administrative", outcome, deciderId, notes)` —
+  records the outcome; auto-bumps status when a check is OK; auto-cancels
+  the contract with a clear reason when an outcome is NOT_DOABLE.
+- `setIntegration(id, {amountCents, documentId, notes})` — admin sets the
+  integration price + uploads the integration contract.
+- `decideIntegration(id, "ACCEPT"|"DECLINE", signedDocumentId?)` — agent
+  accepts (uploads signed integration) or declines (auto-cancels contract).
+- `attachCambiale(id, documentId)` — agent uploads the cambiale.
+- `planInstallation(id, plannedFor)` — admin schedules the final installation.
+  Refuses if both checks aren't OK or (for installment payment methods) if
+  the cambiale isn't on file.
+
+New routes (mounted on `/v1/contracts/:id/...`):
+- `POST /mark-printed`
+- `POST /technical-survey` *(ADMIN/AM)*
+- `POST /administrative-check` *(ADMIN/AM)*
+- `POST /integration` *(ADMIN)*
+- `POST /integration/decide`
+- `POST /cambiale`
+- `POST /plan-installation` *(ADMIN)*
+
+### Backend — House module (NEW)
+`backend/src/modules/houses/{model,service,controller,routes}.ts`. Mounted at
+`/v1/houses`. A customer can have many houses. Each captures:
+- `address` (line1, city, postalCode, region)
+- `catastal` (sheet, particel, sub, reference) — the Italian land-registry
+  identifiers the contract PDF needs to render
+- `propertyDocumentId` — joins to the existing Document module so the
+  `PropertyDocument + photos` upload lands in the standard `/uploads/...`
+  pipeline with the same lifecycle as ID cards / signed scans.
+
+Endpoints: `GET /houses/customer/:customerId`, `GET /:id`, `POST /`,
+`PATCH /:id`, `DELETE /:id`. Scope-checked via the same
+`customerScopeMatch` rules — agents see only their customers' houses.
+
+### Backend — Notes module (NEW)
+`backend/src/modules/notes/{model,service,controller,routes}.ts`. One
+collection, two `targetType` values today (`Customer`, `Contract`) so the
+chat/note feature works on both pages without a second collection. Mounted at
+`/v1/notes`. Visibility derived from the parent's scope rules — an AGENT
+can only post/read notes on their own customers and contracts.
+
+### Backend — Italian fiscal-code validation
+`backend/src/lib/italianFiscalCode.ts` was already in place from v1.5 with the
+full D.M. 12-marzo-1974 checksum algorithm — verified accuracy this round
+(format regex + odd/even position weight tables + mod-26 checksum letter).
+Wired into `customer.controller.createSchema.refine`.
+
+### What survived from earlier rounds and is correct per spec
+
+- ✅ Customer fields: `firstName`, `surname`, `birthDate`, `email`, `pecEmail`,
+  `phone`, `cellphone`, `idNumber`, `idExpireDate`, `address.{line1,city,postalCode,region}`
+- ✅ Customer New form renders the Review 1.5 sections (User details,
+  Living address, Identity document, Additional admin-config fields)
+- ✅ Two-stage advance-pay (manager → admin) with the manager-decline-doesn't-
+  escalate rule
+- ✅ Agent commission breakdown card (paid early / paid after install /
+  pending / deferred)
+- ✅ Solution version pricing matrix (per-row tier picker on ContractNew)
+- ✅ Server-side .docx → PDF via headless LibreOffice
+- ✅ Multi-run `@@placeholder` substitution
+- ✅ Standalone Installment Plans admin removed
+
+## Queued for v1.7 sprint
+
+These items from Review 1.5 are NOT shipped yet and are scoped to the next
+sprint. Foundations above are deliberately built so the queued work plugs in.
+
+### Contract lifecycle UI
+- ContractNew rewrite: agent picks ONLY a customer, then four buttons at the
+  top — *Pick a solution / Pick a payment plan / Fulfill user details /
+  Fulfill house details*. "Generate Contract" disabled-with-tooltip until
+  all four sections are complete (PEC excepted).
+- Agent's "Generate Contract" → template picker filtered by
+  `(solution, paymentPlan)` → popup for `contractStartDate` +
+  `installmentStartDate` → editable preview (warning that field-edits will
+  go through the admin edit-request flow) → submit → lock 4 sections.
+- "Modify section after submit" → confirm "this will delete the contract
+  generation; restart from scratch" popup.
+- Admin approval view shows preset/custom template badge + before/after diff
+  per modified field.
+- Post-approval: "Generate Contract" splits into "Print Contract" +
+  "Re-generate Contract"; after Print, "Print" → "Upload Signed Contract";
+  Re-generate has confirmation popup explaining admin re-approval.
+- Status-aware Contracts table columns: Customer Name, House Location ("Not
+  yet"), House Province, Agent, Area Manager, Solution Picked ("Not yet"),
+  Created Date, Signed Date, Installation Date, Status; all filterable.
+
+### Customer
+- House Details UI on CustomerDetail: list, add, edit, delete houses.
+- ID card front + back photo upload (uses existing Document module with
+  `kind: ID_CARD_FRONT/BACK` enum addition).
+- Notes/chat UI on CustomerDetail + ContractDetail (backend ready).
+- Customer table columns per spec: Name, Surname, City, Current Agent,
+  Current Area Manager, Created Date, all filterable.
+- Dynamic-tag generator for templates: each customer field auto-exposes
+  `@@customer_name`, `@@customer_surname`, etc. — admin sees the catalogue
+  in TemplatesAdmin and can copy-paste tags into Word.
+
+### Pricing
+- Custom price requested by agent → admin approval flow (existing
+  PriceApprovalRequest module already handles the request side; UI wiring
+  remaining: agent continues working while approval is pending).
+- Proportional adaptation when a custom price changes (matrix + advance
+  resize automatically).
+- New SolutionVersion w/ different price: prompt "apply proportional
+  updates to the matrix?" with a warning if declined.
+- Agent + AM commission % must remain fixed across version changes
+  (enforce on `solution.service.createVersion`).
+
+### Notification Areas (per role)
+- Build a dedicated panel surfacing the buckets the spec lists:
+  - **Agent**: Payment to request · Documents requested
+    (cambiale, PEC, signed contract, integration)
+  - **AM**: Payments to approve · Contracts requiring attention
+  - **Admin**: Contracts to approve · Payments to authorize · Documents
+    to upload/request · Surveys to plan · Installations to plan
+
+### Inward Payments admin
+- Per-installment view: Contract · Client · Agent · Due Date · 10/36 ·
+  Status (PAID / OVERDUE). Mark received / overdue.
+
+### Admin user management
+- Upload company-AM/Agent contract (notes + signing date).
+- Portal accessible but FEATURES locked until that contract is uploaded.
+
+### Wider misc
+- "PEC mandatory before installation planning" guard on `planInstallation`
+  service helper (cheap addition).
+- House `propertyDocumentId` photos: extend Document `kind` enum
+  (`PROPERTY_DOCUMENT`) and accept multi-photo upload.
+- Re-render-on-download guarantee for the contract download buttons.
+
+## Files touched this round
+
+**backend (new modules)** — `houses/{model,service,controller,routes}.ts`,
+`notes/{model,service,controller,routes}.ts`
+
+**backend (extended)** — `contracts/contract.model.ts` (status enum +
+new lifecycle fields), `contracts/contract.service.ts` (8 lifecycle
+helpers), `contracts/contract.controller.ts` (matching endpoints),
+`contracts/contract.routes.ts` (7 new routes), `routes/index.ts`
+(houses + notes mounts).
+
+**verified**: 97/97 backend tests still pass, frontend tsc clean,
+production build 363 ms.
