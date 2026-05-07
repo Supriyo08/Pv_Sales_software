@@ -23,10 +23,27 @@ import { logger } from "../utils/logger";
  * during the build step.
  */
 
-// libreoffice-convert ships its own d.ts only in newer versions; fall back to
-// require + manual typing if the import shape is unexpected.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const lib = require("libreoffice-convert") as {
+export class LibreOfficeUnavailableError extends Error {
+  constructor(reason: string) {
+    super(
+      `LibreOffice unavailable for PDF conversion (${reason}). The server falls back to client-side rasterised PDF. Install LibreOffice and the npm 'libreoffice-convert' package to enable byte-perfect Word→PDF conversion.`
+    );
+    this.name = "LibreOfficeUnavailableError";
+  }
+}
+
+/**
+ * Lazy-load `libreoffice-convert` ONLY when someone actually requests a PDF.
+ * The package is optional — production hosts without LibreOffice (e.g. the
+ * default Render Node image) shouldn't crash on boot just because the
+ * conversion endpoint exists. Caller catches `LibreOfficeUnavailableError`
+ * and surfaces a 503; frontend then transparently falls back to its own
+ * client-side PDF rasterisation.
+ *
+ * Cached after the first successful require so repeated downloads don't pay
+ * the lookup cost.
+ */
+type LibreOfficeConvert = {
   convert: (
     buffer: Buffer,
     format: string,
@@ -35,36 +52,47 @@ const lib = require("libreoffice-convert") as {
   ) => void;
 };
 
-const convertAsync = promisify(lib.convert) as (
-  buffer: Buffer,
-  format: string,
-  filter: string | undefined
-) => Promise<Buffer>;
+let convertAsync:
+  | ((buffer: Buffer, format: string, filter: string | undefined) => Promise<Buffer>)
+  | null
+  | undefined;
 
-export class LibreOfficeUnavailableError extends Error {
-  constructor() {
-    super(
-      "LibreOffice / soffice binary not found on the server. Install LibreOffice and ensure `soffice` is on PATH (set LIBREOFFICE_PATH if you keep it elsewhere)."
+function getConvertAsync(): typeof convertAsync {
+  if (convertAsync !== undefined) return convertAsync;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const lib = require("libreoffice-convert") as LibreOfficeConvert;
+    convertAsync = promisify(lib.convert) as NonNullable<typeof convertAsync>;
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error)?.message },
+      "libreoffice-convert package not installed — server-side PDF conversion disabled"
     );
-    this.name = "LibreOfficeUnavailableError";
+    convertAsync = null;
   }
+  return convertAsync;
 }
 
 /**
  * Convert a .docx buffer into a PDF buffer using headless LibreOffice. Throws
- * `LibreOfficeUnavailableError` if soffice isn't installed — the caller can
- * surface a 503 + invite the client to fall back.
+ * `LibreOfficeUnavailableError` if either the npm package or the soffice
+ * binary is missing — the caller surfaces a 503 + invites the client to fall
+ * back to its rasterised path.
  */
 export async function docxToPdf(docxBuffer: Buffer): Promise<Buffer> {
+  const convert = getConvertAsync();
+  if (!convert) {
+    throw new LibreOfficeUnavailableError("npm package not installed");
+  }
   try {
-    return await convertAsync(docxBuffer, ".pdf", undefined);
+    return await convert(docxBuffer, ".pdf", undefined);
   } catch (err) {
     const msg = (err as Error)?.message ?? "";
     if (
       /enoent|spawn|libre[- ]?office|soffice|cannot find|not installed/i.test(msg)
     ) {
-      logger.warn({ err }, "LibreOffice unavailable for PDF conversion");
-      throw new LibreOfficeUnavailableError();
+      logger.warn({ err }, "soffice binary missing");
+      throw new LibreOfficeUnavailableError("soffice binary missing on host");
     }
     throw err;
   }
